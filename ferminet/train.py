@@ -681,7 +681,20 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     pmap_fn = constants.pmap(observable_fns['density'],
                              in_axes=(0, 0, pmap_density_axes))
     observable_fns['density'] = lambda *a, **kw: pmap_fn(*a, **kw).mean(0)
-
+  
+  if cfg.observables.rho_r.calculate:
+    (observable_states['rho_r'], 
+     observable_fns['rho_r']) = observables.cal_rho_r(
+      cfg.system.electrons,
+      cfg.system.ndim,
+      cfg.observables.rho_r.lim,
+      cfg.observables.rho_r.nbins,
+      cfg.system.pbc.apply_pbc,
+      cfg.system.pbc.lattice_vectors
+    )
+    rho_r_file = open(
+        os.path.join(ckpt_save_path, 'rho_r.npy'), 'ab')
+  
   # Initialisation done. We now want to have different PRNG streams on each
   # device. Shard the key over devices
   sharded_key = kfac_jax.utils.make_different_rng_key_on_all_devices(key)
@@ -1052,6 +1065,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
           np.save(dipole_matrix_file, observable_data['dipole'])
       if cfg.observables.density:
         np.save(density_matrix_file, observable_data['density'])
+      if cfg.observables.rho_r.calculate:
+        np.save(rho_r_file, observable_data['rho_r'])
 
       # Checkpointing
       if time.time() - time_of_last_ckpt > cfg.log.save_frequency * 60:
@@ -1067,3 +1082,5 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         dipole_matrix_file.close()
     if cfg.observables.density:
       density_matrix_file.close()
+    if cfg.observables.rho_r.calculate:
+      rho_r_file.close()

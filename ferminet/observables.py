@@ -20,6 +20,7 @@ from ferminet import constants
 from ferminet import density
 from ferminet import mcmc
 from ferminet import networks
+from ferminet import network_blocks
 from ferminet.utils import scf
 import jax
 import jax.numpy as jnp
@@ -405,3 +406,81 @@ def make_density_matrix(
         scf_approx)
 
   return density_state, density_update, density_estimator
+
+def cal_rho_r(
+    nspins: Tuple[int, ...],
+    ndim: int,
+    lim: float,
+    nbins: int,
+    apply_pbc: bool,
+    lattice_vectors: jnp.ndarray,
+) -> Observable:
+  """Evaluates the single-particle density of each species.
+
+  Args:
+    nspins: Tuple containing the number of particles of each species
+    ndim: Number of spatial dimensions
+    lim: Limits of the binning
+    nbins: How many bins to use
+    apply_pbc: Whether or not we are on periodic boundary conditions
+    lattice_vectors: Array of lattice vectors. Unused if apply_pbc is False
+
+  Returns:
+    callable with same arguments as the network and returns the contribution to
+    the Monte Carlo estimate of the single-particle density.
+  """
+
+  if lattice_vectors is None:
+    lattice_vectors = jnp.eye(ndim)
+
+  rec = 2 * jnp.pi * jnp.linalg.inv(lattice_vectors)
+
+  init_state = jnp.zeros((len(nspins),) + (nbins,) * ndim)
+
+  def density_estimator_obc(
+      params: networks.ParamTree,
+      data: networks.FermiNetData,
+      state: jnp.ndarray,
+  ) -> jnp.ndarray:
+    """Returns the single-particle density from electron configurations x."""
+    del params # unused
+
+    data = data.positions.reshape(-1, sum(nspins), ndim)
+    inds = network_blocks.array_partitions(nspins)
+    data = jnp.split(data, inds, axis = 1)
+
+    for i in range(len(nspins)):
+      hist, _ = jnp.histogramdd(data[i].reshape(-1, ndim), 
+                                bins = nbins, 
+                                range = lim * jnp.tile(jnp.array([-1, 1]), (ndim, 1)))
+      state = state.at[i].add(hist)
+
+    return state
+
+  def density_estimator_pbc(
+      params: networks.ParamTree,
+      data: networks.FermiNetData,
+      state: jnp.ndarray,
+  ) -> jnp.ndarray:
+    """Returns the single-particle density from electron configurations x."""
+    del params # unused
+
+    # Make sure all distances are a within the same unit cell
+    phase = jnp.einsum('il,wjl->wji', rec / (2 * jnp.pi), data.positions.reshape(-1, sum(nspins), ndim))
+    phase = phase % 1
+    positions = jnp.einsum('il,wjl->wji', lattice_vectors, phase)
+
+    # Split by particle species
+    inds = network_blocks.array_partitions(nspins)
+    data = jnp.split(data, inds, axis = 1)
+
+    # Sample the walkers
+    for i in range(len(nspins)):
+      hist, _ = jnp.histogramdd(data[i], 
+                                bins = nbins, 
+                                range = lim * jnp.tile(jnp.array([0, 1]), (ndim, 1)))
+      state = state.at[i].add(hist)
+
+    return state
+
+  return init_state, density_estimator_obc if not apply_pbc else density_estimator_pbc
