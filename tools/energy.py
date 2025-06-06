@@ -6,9 +6,9 @@ import numpy as np
 
 burn_in = 100
 
-def energy(path):
+if __name__ == "__main__":
 
-    _, E, *_ = np.loadtxt(f"{path}/train_stats.csv", unpack = True, skiprows = 1, delimiter = ",", dtype = np.complex128)
+    _, E, *_ = np.loadtxt(f"train_stats.csv", unpack = True, skiprows = 1, delimiter = ",", dtype = np.complex128)
 
     E = np.real(E[burn_in:])
 

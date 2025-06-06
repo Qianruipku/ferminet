@@ -173,9 +173,26 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
       )
     if (
         batch_size
-        and data.positions.shape[0] * data.positions.shape[1] != batch_size
+        and data.positions.shape[0] * data.positions.shape[1] > batch_size
     ):
+      logging.warning(
+          f'Batch size (={data.positions.shape[0] * data.positions.shape[1]}) in checkpoint does not match requested batch size (={batch_size}). '
+          'Truncating data to match requested batch size.')
+      batch_per_device = batch_size // data.positions.shape[0]
+      data.spins = data.spins[:,:batch_per_device,:]
+      data.atoms = data.atoms[:,:batch_per_device,:, :]
+      data.charges = data.charges[:,:batch_per_device,:]
+      data.positions = data.positions[:,:batch_per_device,:]
+    elif(batch_size
+        and data.positions.shape[0] * data.positions.shape[1] < batch_size):
       raise ValueError(
           f'Wrong batch size in loaded data. Expected {batch_size}, found '
           f'{data.positions.shape[0] * data.positions.shape[1]}.')
+
+    # When restarting with float32, we need to convert to float64 
+    default_dtype = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
+    if(data.positions.dtype != default_dtype):
+      data.positions = data.positions.astype(default_dtype)
+      params = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), params)
+      opt_state = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), opt_state)
   return t, data, params, opt_state, mcmc_width, density_state

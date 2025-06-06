@@ -1069,7 +1069,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         np.save(rho_r_file, observable_data['rho_r'])
 
       # Checkpointing
-      if time.time() - time_of_last_ckpt > cfg.log.save_frequency * 60:
+      if time.time() - time_of_last_ckpt > cfg.log.save_frequency * 60 or t % cfg.log.save_freq == 0:
         checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width)
         time_of_last_ckpt = time.time()
 
