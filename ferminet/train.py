@@ -290,7 +290,7 @@ def make_training_step(
     step, a callable which performs a set of MCMC steps and then an optimization
     update. See the Step protocol for details.
   """
-  @functools.partial(constants.pmap, donate_argnums=(0, 1, 2))
+  @functools.partial(constants.pmap, donate_argnums=(0, 1, 2), axis_name='devices')
   def step(
       data: networks.FermiNetData,
       params: networks.ParamTree,
@@ -300,8 +300,10 @@ def make_training_step(
   ) -> StepResults:
     """A full update iteration (except for KFAC): MCMC steps + optimization."""
     # MCMC loop
+    i_devices = jax.lax.axis_index('devices')
+
     mcmc_key, loss_key = jax.random.split(key, num=2)
-    data, pmove = mcmc_step(params, data, mcmc_key, mcmc_width)
+    data, pmove = mcmc_step(params, data, mcmc_key, mcmc_width, i_devices)
 
     # Optimization step
     new_params, new_state, loss, aux_data = optimizer_step(params,
@@ -339,7 +341,7 @@ def make_kfac_training_step(
     step, a callable which performs a set of MCMC steps and then an optimization
     update. See the Step protocol for details.
   """
-  mcmc_step = constants.pmap(mcmc_step, donate_argnums=1)
+  mcmc_step = constants.pmap(mcmc_step, donate_argnums=1, axis_name='devices')
   shared_mom = kfac_jax.utils.replicate_all_local_devices(jnp.zeros([]))
   shared_damping = kfac_jax.utils.replicate_all_local_devices(
       jnp.asarray(damping))

@@ -64,16 +64,24 @@ def _log_prob_gaussian(x, mu, sigma):
   return numer - denom
 
 
-def mh_accept(x1, x2, lp_1, lp_2, ratio, key, num_accepts):
+def mh_accept(x1, x2, lp_1, lp_2, ratio, key, num_accepts, rank=0):
   """Given state, proposal, and probabilities, execute MH accept/reject step."""
   key, subkey = jax.random.split(key)
-  rnd = jnp.log(jax.random.uniform(subkey, shape=ratio.shape))
+  seed = 25
+  keyy = jax.random.PRNGKey(seed)
+  num_devices = jax.local_device_count()
+  shape0 = x1.shape[0]
+  rnd_all = jax.random.uniform(keyy, shape=(shape0*num_devices))
+
+  start_idx = rank * shape0
+  start_idx = start_idx.astype(jnp.int32)
+  rnd = jax.lax.dynamic_slice(rnd_all, (start_idx,), (shape0,))
+  rnd = jnp.log(rnd)
   cond = ratio > rnd
   x_new = jnp.where(cond[..., None], x2, x1)
   lp_new = jnp.where(cond, lp_2, lp_1)
   num_accepts += jnp.sum(cond)
   return x_new, key, lp_new, num_accepts
-
 
 def mh_update(
     params: networks.ParamTree,
@@ -87,6 +95,7 @@ def mh_update(
     ndim=3,
     blocks=1,
     i=0,
+    rank=0,
 ):
   """Performs one Metropolis-Hastings step using an all-electron move.
 
@@ -119,7 +128,14 @@ def mh_update(
   key, subkey = jax.random.split(key)
   x1 = data.positions
   if atoms is None:  # symmetric proposal, same stddev everywhere
-    x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
+    seed = 55
+    keyy = jax.random.PRNGKey(seed)
+    num_devices = jax.local_device_count()
+    shape0 = x1.shape[0]
+    norm_all = jax.random.uniform(keyy, shape=(shape0*num_devices, x1.shape[1]))
+    start_idx = rank * shape0
+    norm = jax.lax.dynamic_slice(norm_all, (start_idx, jnp.int32(0)), (shape0, norm_all.shape[1]))
+    x2 = x1 + stddev * norm  # proposal
     lp_2 = 2.0 * f(
         params, x2, data.spins, data.atoms, data.charges
     )  # log prob of proposal
@@ -142,7 +158,7 @@ def mh_update(
     x1 = jnp.reshape(x1, [n, -1])
     x2 = jnp.reshape(x2, [n, -1])
   x_new, key, lp_new, num_accepts = mh_accept(
-      x1, x2, lp_1, lp_2, ratio, key, num_accepts)
+      x1, x2, lp_1, lp_2, ratio, key, num_accepts, rank)
   new_data = networks.FermiNetData(**(dict(data) | {'positions': x_new}))
   return new_data, key, lp_new, num_accepts
 
@@ -159,6 +175,7 @@ def mh_block_update(
     ndim=3,
     blocks=1,
     i=0,
+    rank=0,
 ):
   """Performs one Metropolis-Hastings step for a block of electrons.
 
@@ -244,7 +261,7 @@ def make_mcmc_step(batch_network,
   """
   inner_fun = mh_block_update if blocks > 1 else mh_update
 
-  def mcmc_step(params, data, key, width):
+  def mcmc_step(params, data, key, width, rank=0):
     """Performs a set of MCMC steps.
 
     Args:
@@ -258,6 +275,7 @@ def make_mcmc_step(batch_network,
       updated RNG state and pmove the average probability a move was accepted.
     """
     pos = data.positions
+    irank = jax.lax.axis_index('devices')
 
     def step_fn(i, x):
       return inner_fun(
@@ -268,7 +286,8 @@ def make_mcmc_step(batch_network,
           atoms=atoms,
           ndim=ndim,
           blocks=blocks,
-          i=i)
+          i=i,
+          rank=irank)
 
     nsteps = steps * blocks
     logprob = 2.0 * batch_network(
