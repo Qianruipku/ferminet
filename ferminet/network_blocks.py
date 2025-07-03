@@ -42,9 +42,10 @@ def split_into_blocks(block_arr: jnp.ndarray,
   """Split a square array into blocks along the leading two axes.
 
   Consider the (N,N) array
-  A B
-  C D
-  where A=(N1,N1), B=(N1,N2), C=(N2,N1), D=(N2,N2), and N=N1+N2. Split the array
+  A    B   ...
+  C    D   ...
+  .... ... ...
+  where A=(N1,N1), B=(N1,N2), C=(N2,N1), D=(N2,N2), and N=sum_i(Ni). Split the array
   into the given blocks.
 
   Args:

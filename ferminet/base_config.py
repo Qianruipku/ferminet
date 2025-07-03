@@ -149,8 +149,15 @@ def default() -> ml_collections.ConfigDict:
           # 1. Specify the system by setting variables below.
           # list of system.Atom objects with element type and position.
           'molecule': config_dict.placeholder(list),
-          # number of spin up, spin-down electrons
-          'electrons': tuple(),
+          # number of particles of each type
+          'particles': tuple(),
+          # Charges of each particle. Defaults to 
+          # (-1, -1, +1, +1, -1, -1, +1, +1, +1, +1)
+          'charges': tuple(),
+          # Masses of each particle. Defaults to 
+          # (1, 1, 1, 1, MUON_MASS, MUON_MASS, 
+          # MUON_MASS, MUON_MASS, PROTON_MASS, PROTON_MASS)
+          'masses': tuple(),
           # Dimensionality. Change with care. FermiNet implementation currently
           # assumes 3D systems.
           'ndim': 3,

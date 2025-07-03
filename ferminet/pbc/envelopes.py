@@ -78,7 +78,7 @@ def make_multiwave_envelope(kpoints: jnp.ndarray) -> envelopes.Envelope:
 
 def make_kpoints(
     lattice: Union[np.ndarray, jnp.ndarray],
-    spins: Tuple[int, int],
+    spins: Tuple[int, ...],
     min_kpoints: Optional[int] = None,
 ) -> jnp.ndarray:
   """Generates an array of reciprocal lattice vectors.
@@ -101,6 +101,8 @@ def make_kpoints(
     jnp.ndarray, shape (nkpoints, ndim), an array of reciprocal lattice
       vectors sorted in ascending order according to length.
   """
+  if lattice is None:
+    lattice = jnp.eye(3) # hard-coded
   rec_lattice = 2 * jnp.pi * jnp.linalg.inv(lattice)
   # Calculate required no. of k points
   if min_kpoints is None:

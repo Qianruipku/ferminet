@@ -15,6 +15,7 @@
 """Generic utils for all QMC calculations."""
 
 from typing import Any, Callable, Mapping, Sequence
+import jax.numpy as jnp
 
 
 def select_output(f: Callable[..., Sequence[Any]],
@@ -38,3 +39,16 @@ def flatten_dict_keys(input_dict: Mapping[str, Any],
     else:
       output_dict[nested_key] = value
   return output_dict
+
+
+def remove_diagonal(arr: jnp.ndarray) -> jnp.ndarray:
+  """Given an array of shape (n, n, ...), return the array of 
+    shape (n(n-1), ...) obtained by removing the diagonal in 
+    the first two indices and flattening the array. Note that
+    because of the way it is done, the elements appear in a
+    strange order
+  """
+  return jnp.concatenate([
+      arr[jnp.triu_indices(arr.shape[0], k=1)],
+      arr[jnp.tril_indices(arr.shape[0], k=-1)]
+  ])

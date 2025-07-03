@@ -25,16 +25,17 @@ from typing import Callable, Optional, Sequence, Tuple
 import chex
 from ferminet import hamiltonian
 from ferminet import networks
+from ferminet.utils import utils
 import jax
 import jax.numpy as jnp
 
 
-def make_ewald_potential(
+def make_ewald_potential_3d(
     lattice: jnp.ndarray,
     atoms: jnp.ndarray,
-    charges: jnp.ndarray,
+    atom_charges: jnp.ndarray,
+    particle_charges: jnp.ndarray,
     truncation_limit: int = 5,
-    include_heg_background: bool = True
 ) -> Callable[[jnp.ndarray, jnp.ndarray], float]:
   """Creates a function to evaluate infinite Coulomb sum for periodic lattice.
 
@@ -42,7 +43,7 @@ def make_ewald_potential(
     lattice: Shape (3, 3). Matrix whose columns are the primitive lattice
       vectors.
     atoms: Shape (natoms, ndim). Positions of the atoms.
-    charges: Shape (natoms). Nuclear charges of the atoms.
+    atom_charges: Shape (natoms). Nuclear charges of the atoms.
     truncation_limit: Integer. Half side length of cube of nearest neighbours
       to primitive cell which are summed over in evaluation of Ewald sum.
       Must be large enough to achieve convergence for the real and reciprocal
@@ -68,6 +69,14 @@ def make_ewald_potential(
   rec_vec_square = jnp.einsum('ij,ij->i', rec_vectors, rec_vectors)
   lat_vec_norm = jnp.linalg.norm(lat_vectors[1:], axis=-1)
 
+  madelung_const = (
+      jnp.sum(jax.scipy.special.erfc(gamma**0.5 * lat_vec_norm) / lat_vec_norm)
+      - 2 * gamma**0.5 / jnp.pi**0.5)
+  madelung_const += (
+      (4 * jnp.pi / volume) *
+      jnp.sum(jnp.exp(-rec_vec_square / (4 * gamma)) / rec_vec_square) -
+      jnp.pi / (volume * gamma))
+
   def real_space_ewald(separation: jnp.ndarray):
     """Real-space Ewald potential between charges seperated by separation."""
     displacements = jnp.linalg.norm(
@@ -86,66 +95,38 @@ def make_ewald_potential(
     return (real_space_ewald(separation) + recp_space_ewald(separation) -
             jnp.pi / (volume * gamma))
 
-  madelung_const = (
-      jnp.sum(jax.scipy.special.erfc(gamma**0.5 * lat_vec_norm) / lat_vec_norm)
-      - 2 * gamma**0.5 / jnp.pi**0.5)
-  madelung_const += (
-      (4 * jnp.pi / volume) *
-      jnp.sum(jnp.exp(-rec_vec_square / (4 * gamma)) / rec_vec_square) -
-      jnp.pi / (volume * gamma))
-
   batch_ewald_sum = jax.vmap(ewald_sum, in_axes=(0,))
 
-  def atom_electron_potential(ae: jnp.ndarray):
-    """Evaluates periodic atom-electron potential."""
-    nelec = ae.shape[0]
-    ae = jnp.reshape(ae, [-1, 3])  # flatten electronxatom axis
-    # calculate potential for each ae pair
-    ewald = batch_ewald_sum(ae) - madelung_const
-    return jnp.sum(-jnp.tile(charges, nelec) * ewald)
+  def potential(positions: jnp.ndarray, nspins: jnp.ndarray):
+    """Callable which returns the Ewald potential
 
-  def electron_electron_potential(ee: jnp.ndarray):
-    """Evaluates periodic electron-electron potential."""
-    nelec = ee.shape[0]
-    ee = jnp.reshape(ee, [-1, 3])
-    if include_heg_background:
-      ewald = batch_ewald_sum(ee)
-    else:
-      ewald = batch_ewald_sum(ee) - madelung_const
-    ewald = jnp.reshape(ewald, [nelec, nelec])
-    ewald = ewald.at[jnp.diag_indices(nelec)].set(0.0)
-    if include_heg_background:
-      return 0.5 * jnp.sum(ewald) + 0.5 * nelec * madelung_const
-    else:
-      return 0.5 * jnp.sum(ewald)
+    Args:
+      positions: electron positions, shape (nelectrons * ndim, )
+    """
 
-  # Atom-atom potential
-  natom = atoms.shape[0]
-  if natom > 1:
-    aa = jnp.reshape(atoms, [1, -1, 3]) - jnp.reshape(atoms, [-1, 1, 3])
-    aa = jnp.reshape(aa, [-1, 3])
-    chargeprods = (charges[..., None] @ charges[..., None].T).flatten()
-    ewald = batch_ewald_sum(aa) - madelung_const
-    ewald = jnp.reshape(ewald, [natom, natom])
-    ewald = ewald.at[jnp.diag_indices(natom)].set(0.0)
-    ewald = ewald.flatten()
-    atom_atom_potential = 0.5 * jnp.sum(chargeprods * ewald)
-  else:
-    atom_atom_potential = 0.0
+    # Make sure all distances are a within the same unit cell
+    phase_particles = jnp.einsum('il,jl->ji', rec / (2 * jnp.pi), positions.reshape(-1, 3))
+    phase_particles = phase_particles % 1
+    positions = jnp.einsum('il,jl->ji', lattice, phase_particles)
 
-  def potential(ae: jnp.ndarray, ee: jnp.ndarray):
-    """Accumulates atom-electron, atom-atom, and electron-electron potential."""
-    # Reduce vectors into first unit cell - Ewald summation
-    # is only guaranteed to converge close to the origin
-    phase_ae = jnp.einsum('il,jkl->jki', rec / (2 * jnp.pi), ae)
-    phase_ee = jnp.einsum('il,jkl->jki', rec / (2 * jnp.pi), ee)
-    phase_prim_ae = phase_ae % 1
-    phase_prim_ee = phase_ee % 1
-    prim_ae = jnp.einsum('il,jkl->jki', lattice, phase_prim_ae)
-    prim_ee = jnp.einsum('il,jkl->jki', lattice, phase_prim_ee)
-    return jnp.real(
-        atom_electron_potential(prim_ae) +
-        electron_electron_potential(prim_ee) + atom_atom_potential)
+    # Treat all particles equally, perform the Ewald sum symmetrically
+    all_positions = jnp.concatenate([atoms, positions])
+    all_charges = jnp.concatenate([atom_charges, jnp.repeat(particle_charges, nspins)])
+
+    diff_pos = all_positions[:, None, ...] - all_positions[None, :, ...]
+    charge_prod = all_charges[:, None] * all_charges[None, :]
+    n = all_positions.shape[0]
+
+    sum_charges_squared = jnp.sum(all_charges**2)
+
+    # Remove diagonal elements and flatten to pass to batch_ewald_sum
+    diff_pos = utils.remove_diagonal(diff_pos)
+    charge_prod = utils.remove_diagonal(charge_prod)
+
+    pot = 0.5 * (jnp.sum(charge_prod * batch_ewald_sum(diff_pos)) +
+                 madelung_const * sum_charges_squared)
+    
+    return jnp.real(pot)
 
   return potential
 
@@ -154,12 +135,17 @@ def local_energy(
     f: networks.FermiNetLike,
     charges: jnp.ndarray,
     nspins: Sequence[int],
+    particle_charges: Sequence[int],
+    particle_masses: Sequence[float],
+    ndim: int = 3,
     use_scan: bool = False,
     complex_output: bool = False,
     laplacian_method: str = 'default',
     states: int = 0,
-    lattice: Optional[jnp.ndarray] = None,
-    heg: bool = True,
+    state_specific: bool = False,
+    pp_type: str = 'ccecp',
+    pp_symbols: Sequence[str] | None = None,
+    lattice_vectors: Optional[jnp.ndarray] = None,
     convergence_radius: int = 5,
 ) -> hamiltonian.LocalEnergy:
   """Creates the local energy function in periodic boundary conditions.
@@ -174,11 +160,17 @@ def local_energy(
     laplacian_method: Laplacian calculation method. One of:
       'default': take jvp(grad), looping over inputs
       'folx': use Microsoft's implementation of forward laplacian
-    states: Number of excited states to compute. Not implemented, only present
-      for consistency of calling convention.
-    lattice: Shape (ndim, ndim). Matrix of lattice vectors. Default: identity
+    states: Number of excited states to compute. If 0, compute ground state with
+      default machinery. If 1, compute ground state with excited state machinery
+    state_specific: Only used for excited states (states > 0). If true, then
+      the local energy is computed separately for each output from the network,
+      instead of the local energy matrix being computed.
+    pp_type: type of pseudopotential to use. Only used if ecp_symbols is
+      provided.
+    pp_symbols: sequence of element symbols for which the pseudopotential is
+      used.
+    lattice_vectors: Shape (ndim, ndim). Matrix of lattice vectors. Default: identity
       matrix.
-    heg: bool. Flag to enable features specific to the electron gas.
     convergence_radius: int. Radius of cluster summed over by Ewald sums.
 
   Returns:
@@ -188,14 +180,29 @@ def local_energy(
   """
   if states:
     raise NotImplementedError('Excited states not implemented with PBC.')
-  del nspins
-  if lattice is None:
-    lattice = jnp.eye(3)
+  
+  if ndim != 3:
+    raise NotImplementedError(f'{ndim}-dimensional Ewald summation not implemented')
+  else:
+    ewald_function = make_ewald_potential_3d
+  
+  if pp_symbols is not None:
+    raise NotImplementedError("Pseudopotentials not implemented for PBCs")
+
+  if lattice_vectors is None:
+    lattice_vectors = jnp.eye(3)
+
+  nspins = jnp.asarray(nspins)
+  particle_charges = jnp.asarray(particle_charges)
+  particle_masses = jnp.asarray(particle_masses)
 
   ke = hamiltonian.local_kinetic_energy(f,
+                                        nspins=nspins,
+                                        particle_masses=particle_masses,
                                         use_scan=use_scan,
                                         complex_output=complex_output,
-                                        laplacian_method=laplacian_method)
+                                        laplacian_method=laplacian_method,
+                                        ndim=ndim)
 
   def _e_l(
       params: networks.ParamTree, key: chex.PRNGKey, data: networks.FermiNetData
@@ -208,12 +215,10 @@ def local_energy(
       data: MCMC configuration.
     """
     del key  # unused
-    potential_energy = make_ewald_potential(
-        lattice, data.atoms, charges, convergence_radius, heg
+    potential_energy = ewald_function(
+        lattice_vectors, data.atoms, charges, particle_charges, convergence_radius
     )
-    ae, ee, _, _ = networks.construct_input_features(
-        data.positions, data.atoms)
-    potential = potential_energy(ae, ee)
+    potential = potential_energy(data.positions, nspins)
     kinetic = ke(params, data)
     return potential + kinetic, None
 

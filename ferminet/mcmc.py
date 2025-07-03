@@ -25,6 +25,7 @@ import jax
 from jax import lax
 from jax import numpy as jnp
 import numpy as np
+from typing import Tuple
 
 
 def _harmonic_mean(x, atoms):
@@ -64,14 +65,14 @@ def _log_prob_gaussian(x, mu, sigma):
   return numer - denom
 
 
-def mh_accept(x1, x2, lp_1, lp_2, ratio, key, num_accepts):
+def mh_accept(x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx):
   """Given state, proposal, and probabilities, execute MH accept/reject step."""
   key, subkey = jax.random.split(key)
   rnd = jnp.log(jax.random.uniform(subkey, shape=ratio.shape))
   cond = ratio > rnd
   x_new = jnp.where(cond[..., None], x2, x1)
   lp_new = jnp.where(cond, lp_2, lp_1)
-  num_accepts += jnp.sum(cond)
+  num_accepts = num_accepts.at[:, species_idx].add(cond.astype(jnp.float32))
   return x_new, key, lp_new, num_accepts
 
 
@@ -82,9 +83,10 @@ def mh_update(
     key: chex.PRNGKey,
     lp_1,
     num_accepts,
-    stddev=0.02,
+    stddev: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    ndim: int,
     atoms=None,
-    ndim=3,
     blocks=1,
     i=0,
 ):
@@ -116,35 +118,28 @@ def mh_update(
       num_accepts: update running total of number of accepted MH moves.
   """
   del i, blocks  # electron index ignored for all-electron moves
+  if atoms is not None:
+    raise NotImplementedError("Asymmetric moves not implemented")
+
   key, subkey = jax.random.split(key)
+  start_idx = 0
   x1 = data.positions
-  if atoms is None:  # symmetric proposal, same stddev everywhere
-    x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
-    lp_2 = 2.0 * f(
-        params, x2, data.spins, data.atoms, data.charges
-    )  # log prob of proposal
+  for species_idx, nspecies in enumerate(nspins):
+    species_width = stddev[species_idx]
+    species_shape = (x1.shape[0], nspecies * ndim)
+
+    x2 = x1.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].add(
+        species_width *
+        jax.random.normal(subkey, shape=species_shape))  # proposal
+    lp_2 = 2. * f(params, x2, data.spins, data.atoms, data.charges)  # log prob of proposal
     ratio = lp_2 - lp_1
-  else:  # asymmetric proposal, stddev propto harmonic mean of nuclear distances
-    n = x1.shape[0]
-    x1 = jnp.reshape(x1, [n, -1, 1, ndim])
-    hmean1 = _harmonic_mean(x1, atoms)  # harmonic mean of distances to nuclei
 
-    x2 = x1 + stddev * hmean1 * jax.random.normal(subkey, shape=x1.shape)
-    lp_2 = 2.0 * f(
-        params, x2, data.spins, data.atoms, data.charges
-    )  # log prob of proposal
-    hmean2 = _harmonic_mean(x2, atoms)  # needed for probability of reverse jump
-
-    lq_1 = _log_prob_gaussian(x1, x2, stddev * hmean1)  # forward probability
-    lq_2 = _log_prob_gaussian(x2, x1, stddev * hmean2)  # reverse probability
-    ratio = lp_2 + lq_2 - lp_1 - lq_1
-
-    x1 = jnp.reshape(x1, [n, -1])
-    x2 = jnp.reshape(x2, [n, -1])
-  x_new, key, lp_new, num_accepts = mh_accept(
-      x1, x2, lp_1, lp_2, ratio, key, num_accepts)
-  new_data = networks.FermiNetData(**(dict(data) | {'positions': x_new}))
-  return new_data, key, lp_new, num_accepts
+    start_idx += nspecies
+    key, subkey = jax.random.split(key)
+    x1, key, lp_1, num_accepts = mh_accept(
+        x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx)
+  new_data = networks.FermiNetData(**(dict(data) | {'positions': x1}))
+  return new_data, key, lp_1, num_accepts
 
 
 def mh_block_update(
@@ -154,9 +149,10 @@ def mh_block_update(
     key: chex.PRNGKey,
     lp_1,
     num_accepts,
-    stddev=0.02,
+    stddev: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    ndim: int,
     atoms=None,
-    ndim=3,
     blocks=1,
     i=0,
 ):
@@ -186,42 +182,52 @@ def mh_block_update(
   Raises:
     NotImplementedError: if atoms is supplied.
   """
+  if atoms is not None:
+    raise NotImplementedError("Asymmetric moves not implemented")
+
   key, subkey = jax.random.split(key)
   batch_size = data.positions.shape[0]
-  nelec = data.positions.shape[1] // ndim
-  pad = (blocks - nelec % blocks) % blocks
-  x1 = jnp.reshape(
-      jnp.pad(data.positions, ((0, 0), (0, pad * ndim))),
-      [batch_size, blocks, -1, ndim],
-  )
-  ii = i % blocks
-  if atoms is None:  # symmetric prop, same stddev everywhere
+  start_idx = 0
+  new_pos = data.positions
+  for species_idx, nspecies in enumerate(nspins):
+    species_width = stddev[species_idx]
+
+    x1 = new_pos[:, start_idx * ndim:(start_idx + nspecies) * ndim]
+    pad = (blocks - nspecies % blocks) % blocks
+    # reshape into blocks
+    x1 = jnp.reshape(
+        jnp.pad(x1, ((0, 0), (0, pad * ndim))),
+        [batch_size, blocks, -1, ndim],
+    )
+    ii = i % blocks
+    # update block ii
     x2 = x1.at[:, ii].add(
-        stddev * jax.random.normal(subkey, shape=x1[:, ii].shape))
+        species_width * jax.random.normal(subkey, shape=x1[:, ii].shape))
     x2 = jnp.reshape(x2, [batch_size, -1])
+    # re-implant block into original array
     if pad > 0:
       x2 = x2[..., :-pad*ndim]
+    x2 = new_pos.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].set(x2)
+    x1 = new_pos
     # log prob of proposal
     lp_2 = 2.0 * f(params, x2, data.spins, data.atoms, data.charges)
     ratio = lp_2 - lp_1
-  else:  # asymmetric proposal, stddev propto harmonic mean of nuclear distances
-    raise NotImplementedError('Still need to work out reverse probabilities '
-                              'for asymmetric moves.')
 
-  x1 = jnp.reshape(x1, [batch_size, -1])
-  if pad > 0:
-    x1 = x1[..., :-pad*ndim]
-  x_new, key, lp_new, num_accepts = mh_accept(
-      x1, x2, lp_1, lp_2, ratio, key, num_accepts)
-  new_data = networks.FermiNetData(**(dict(data) | {'positions': x_new}))
-  return new_data, key, lp_new, num_accepts
+    x1, key, lp_1, num_accepts = mh_accept(
+        x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx)
+    new_pos = x1
+
+    start_idx += nspecies
+  new_data = networks.FermiNetData(**(dict(data) | {'positions': new_pos}))
+  return new_data, key, lp_1, num_accepts
 
 
 def make_mcmc_step(batch_network,
                    batch_per_device,
+                   nspins,
+                   ndim,
                    steps=10,
                    atoms=None,
-                   ndim=3,
                    blocks=1):
   """Creates the MCMC step function.
 
@@ -265,19 +271,22 @@ def make_mcmc_step(batch_network,
           batch_network,
           *x,
           stddev=width,
-          atoms=atoms,
+          nspins=nspins,
           ndim=ndim,
+          atoms=atoms,
           blocks=blocks,
           i=i)
 
     nsteps = steps * blocks
+    nspecies = len(nspins)
     logprob = 2.0 * batch_network(
         params, pos, data.spins, data.atoms, data.charges
     )
     new_data, key, _, num_accepts = lax.fori_loop(
-        0, nsteps, step_fn, (data, key, logprob, 0.0)
+        0, nsteps, step_fn, (data, key, logprob, 
+        jnp.zeros((batch_per_device, nspecies)))
     )
-    pmove = jnp.sum(num_accepts) / (nsteps * batch_per_device)
+    pmove = jnp.sum(num_accepts, axis = 0) / (nsteps * batch_per_device)
     pmove = constants.pmean(pmove)
     return new_data, pmove
 
@@ -311,11 +320,10 @@ def update_mcmc_width(
   """
 
   t_since_mcmc_update = t % adapt_frequency
-  # update `pmoves`; `pmove` should be the same across devices
-  pmoves[t_since_mcmc_update] = pmove.reshape(-1)[0].item()
   if t > 0 and t_since_mcmc_update == 0:
-    if np.mean(pmoves) > pmove_max:
-      width *= 1.1
-    elif np.mean(pmoves) < pmove_min:
-      width /= 1.1
+    mean_pmoves = jnp.mean(pmoves, axis=1)
+    width = width.at[:,jnp.where(mean_pmoves > pmove_max)].multiply(1.1)
+    width = width.at[:,jnp.where(mean_pmoves < pmove_min)].divide(1.1)
+    pmoves[:,:] = 0
+  pmoves[:,t%adapt_frequency] = pmove
   return width, pmoves

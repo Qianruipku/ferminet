@@ -75,5 +75,8 @@ class Writer(contextlib.AbstractContextManager):
     if self._log:
       logging.info('Iteration %s: %s', t, data)
 
+  def flush(self):
+    self._file.flush()
+
   def __exit__(self, exc_type, exc_val, exc_tb):
     self._file.close()

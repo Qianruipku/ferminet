@@ -52,8 +52,8 @@ class FermiNetData:
     treated as identical for every MCMC configuration.
 
   Attributes:
-    positions: walker positions, shape (nelectrons*ndim).
-    spins: spins of each walker, shape (nelectrons).
+    positions: walker positions, shape (nparticles*ndim).
+    spins: spins of each walker, shape (nparticles).
     atoms: atomic positions, shape (natoms*ndim).
     charges: atomic charges, shape (natoms).
   """
@@ -349,82 +349,80 @@ class Network:
 
 def _split_spin_pairs(
     arr: jnp.ndarray,
-    nspins: Tuple[int, int],
+    nspins: Tuple[int, ...],
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
   """Splits array into parallel and anti-parallel spin channels.
 
-  For an array of dimensions (nelec, nelec, ...), where nelec = sum(nspins),
-  and the first nspins[0] elements along the first two axes correspond to the up
-  electrons, we have an array like:
+  For an array of dimensions (nparticles, nparticles, ...), where 
+  nparticles = sum(nspins), and the first nspins[0] elements along 
+  the first two axes correspond to the up electrons, we have an array like:
 
-    up,up   | up,down
-    down,up | down,down
+    el up, el up    | el up, el down    | el up, positron ...
+    el down, el up  | el down, el down  | el down, positron ...
+    positron, el up | positron, el down | positron, positron ...
+    ....               ...                 ...
 
   Split this into the diagonal and off-diagonal blocks. As nspins[0] !=
   nspins[1] in general, flatten the leading two dimensions before combining the
   blocks.
 
   Args:
-    arr: array with leading dimensions (nelec, nelec).
-    nspins: number of electrons in each spin channel.
+    arr: array with leading dimensions (nparticles, nparticles).
+    nspins: number of particles in each spin/species channel.
 
   Returns:
-    parallel, antiparallel arrays, where
-       - parallel is of shape (nspins[0]**2 + nspins[1]**2, ...) and the first
+    undis (undistinguishable), dis (distinguishable) arrays, where
+       - undis is of shape (sum_i nspins[i]**2, ...) and the first
          nspins[0]**2 elements correspond to the up,up block and the subsequent
-         elements to the down,down block.
-       - antiparallel is of shape (2 * nspins[0] + nspins[1], ...) and the first
-         nspins[0] + nspins[1] elements correspond to the up,down block and the
-         subsequent
-         elements to the down,up block.
+         elements to the down,down block, followed by different species
+       - antiparallel is of shape (nparticles**2 - sum_i nspins[i]**2, ...) and 
+         the first nspins[0] + nspins[1] elements correspond to the up,down 
+         block and the subsequent elements to the down,up block folowed
+         by different species
   """
-  if len(nspins) != 2:
-    raise ValueError(
-        'Separate spin channels has not been verified with spin sampling.'
-    )
-  up_up, up_down, down_up, down_down = network_blocks.split_into_blocks(
+
+  blocks = network_blocks.split_into_blocks(
       arr, nspins
   )
   trailing_dims = jnp.shape(arr)[2:]
-  parallel_spins = [
-      up_up.reshape((-1,) + trailing_dims),
-      down_down.reshape((-1,) + trailing_dims),
-  ]
-  antiparallel_spins = [
-      up_down.reshape((-1,) + trailing_dims),
-      down_up.reshape((-1,) + trailing_dims),
-  ]
+
+  nspecies = len(nspins)
+  all_inds = jnp.arange(nspecies * nspecies)
+  diag_inds = jnp.arange(0, nspecies*nspecies, nspecies + 1)
+  offdiag_inds = all_inds[~jnp.isin(all_inds, diag_inds)]
+
+  undis = [blocks[i].reshape((-1,) + trailing_dims) for i in diag_inds]
+  dis = [blocks[i].reshape((-1,) + trailing_dims) for i in offdiag_inds]
+
   return (
-      jnp.concatenate(parallel_spins, axis=0),
-      jnp.concatenate(antiparallel_spins, axis=0),
+      jnp.concatenate(undis, axis=0),
+      jnp.concatenate(dis, axis=0),
   )
 
 
 def _combine_spin_pairs(
-    parallel_spins: jnp.ndarray,
-    antiparallel_spins: jnp.ndarray,
-    nspins: Tuple[int, int],
+    undis: jnp.ndarray,
+    dis: jnp.ndarray,
+    nspins: Tuple[int, ...],
 ) -> jnp.ndarray:
-  """Combines arrays of parallel spins and antiparallel spins.
-
-  This is the reverse of _split_spin_pairs.
+  """This is the reverse of _split_spin_pairs.
 
   Args:
-    parallel_spins: array of shape (nspins[0]**2 + nspins[1]**2, ...).
-    antiparallel_spins: array of shape (2 * nspins[0] * nspins[1], ...).
-    nspins: number of electrons in each spin channel.
+    undis: array of shape (sum_i nspins[i]**2, ...).
+    dis: array of shape (nparticles**2 - sum_i nspins[i]**2, ...).
+    nspins: number of particles in each spin/species channel.
 
   Returns:
-    array of shape (nelec, nelec, ...).
+    array of shape (nparticles, nparticles, ...).
   """
-  if len(nspins) != 2:
-    raise ValueError(
-        'Separate spin channels has not been verified with spin sampling.'
-    )
+  raise NotImplementedError("Separating by spin channels is not yet"
+                        "implemented, please ask me to implement it")
+
   nsame_pairs = [nspin**2 for nspin in nspins]
   same_pair_partitions = network_blocks.array_partitions(nsame_pairs)
-  up_up, down_down = jnp.split(parallel_spins, same_pair_partitions, axis=0)
-  up_down, down_up = jnp.split(antiparallel_spins, 2, axis=0)
+  undis_blocks = jnp.split(undis, same_pair_partitions, axis=0)
+  dis_blocks = jnp.split(dis, 2, axis=0)
+
   trailing_dims = jnp.shape(parallel_spins)[1:]
   up = jnp.concatenate(
       (
@@ -480,7 +478,7 @@ def construct_input_features(
 
 def make_ferminet_features(
     natoms: int,
-    nspins: Optional[Tuple[int, int]] = None,
+    nspins: Optional[Tuple[int, ...]] = None,
     ndim: int = 3,
     rescale_inputs: bool = False,
 ) -> FeatureLayer:
@@ -514,7 +512,7 @@ def make_ferminet_features(
 def construct_symmetric_features(
     h_one: jnp.ndarray,
     h_two: jnp.ndarray,
-    nspins: Tuple[int, int],
+    nspins: Tuple[int, ...],
     h_aux: Optional[jnp.ndarray],
 ) -> jnp.ndarray:
   """Combines intermediate features from rank-one and -two streams.
@@ -524,7 +522,7 @@ def construct_symmetric_features(
       the output size of the previous layer.
     h_two: set of two-electron features. Shape: (nelectrons, nelectrons, n2),
       where n2 is the output size of the previous layer.
-    nspins: Number of spin-up and spin-down electrons.
+    nspins: Number of particle spin/species
     h_aux: optional auxiliary features to include. Shape (nelectrons, naux).
 
   Returns:
@@ -557,7 +555,7 @@ def construct_symmetric_features(
 
 
 def make_schnet_convolution(
-    nspins: Tuple[int, int], separate_spin_channels: bool
+    nspins: Tuple[int, ...], separate_spin_channels: bool
 ) -> ...:
   """Returns init/apply pair for SchNet-style convolutions.
 
@@ -581,7 +579,7 @@ def make_schnet_convolution(
       dims_two: number of hidden units of the two-electron layer.
       embedding_dim: embedding dimension to use for the convolution.
     """
-    nchannels = 2 if separate_spin_channels else 1
+    nchannels = len(nspins) if separate_spin_channels else 1
     key_one, *key_two = jax.random.split(key, num=nchannels + 1)
     h_one_kernel = network_blocks.init_linear_layer(
         key_one, in_dim=dims_one, out_dim=embedding_dim, include_bias=False
@@ -673,7 +671,7 @@ def make_schnet_electron_nuclear_convolution() -> ...:
 
 
 def make_fermi_net_layers(
-    nspins: Tuple[int, int], natoms: int, options: FermiNetOptions
+    nspins: Tuple[int, ...], natoms: int, options: FermiNetOptions
 ) -> Tuple[InitLayersFn, ApplyLayersFn]:
   """Creates the permutation-equivariant and interaction layers for FermiNet.
 
@@ -835,7 +833,7 @@ def make_fermi_net_layers(
       )
 
       if i < len(options.hidden_dims) - 1 or options.use_last_layer:
-        ndouble_channels = 2 if options.separate_spin_channels else 1
+        ndouble_channels = len(nspins) if options.separate_spin_channels else 1
         layer_params['double'] = []
         for ichannel in range(ndouble_channels):
           layer_params['double'].append(
@@ -921,7 +919,7 @@ def make_fermi_net_layers(
       nuclear_embedding: Optional[jnp.ndarray],
   ) -> Tuple[jnp.ndarray, Tuple[jnp.ndarray, ...], Optional[jnp.ndarray]]:
     if options.separate_spin_channels:
-      assert len(h_two) == 2
+      assert len(h_two) == len(nspins)
     else:
       assert len(h_two) == 1
 
@@ -1010,7 +1008,8 @@ def make_fermi_net_layers(
       # Use the same stream for spin-parallel and spin-antiparallel electrons.
       # In order to handle different numbers of spin-up and spin-down electrons,
       # flatten the i,j indices.
-      # Shapes: (nup*nup + ndown*ndown, nfeatures), (nup*down*2, nfeatures).
+      # Shapes: (sum_i nspins[i]**2, nfeatures), 
+      #         (sum(nspins) - sum_i nspins[i]**2, nfeatures).
       h_two = _split_spin_pairs(ee_features, nspins)
     else:
       # Use the same stream for spin-parallel and spin-antiparallel electrons.

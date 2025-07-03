@@ -37,6 +37,9 @@ from ferminet.utils import statistics
 from ferminet.utils import system
 from ferminet.utils import utils
 from ferminet.utils import writers
+import ferminet.pbc.hamiltonian as pbc_hamiltonian
+import ferminet.pbc.envelopes as pbc_envelopes
+import ferminet.pbc.feature_layer as pbc_feature_layer
 import jax
 from jax.experimental import multihost_utils
 import jax.numpy as jnp
@@ -48,10 +51,11 @@ from typing_extensions import Protocol
 
 
 def _assign_spin_configuration(
-    nalpha: int, nbeta: int, batch_size: int = 1
+    particles: int, batch_size: int = 1
 ) -> jnp.ndarray:
   """Returns the spin configuration for a fixed spin polarisation."""
-  spins = jnp.concatenate((jnp.ones(nalpha), -jnp.ones(nbeta)))
+  spin_values = [1. if i % 2 == 0 else -1. for i in range(len(particles))]
+  spins = jnp.concatenate([jnp.full(count, value) for count, value in zip(particles, spin_values)])
   return jnp.tile(spins[None], reps=(batch_size, 1))
 
 
@@ -59,6 +63,7 @@ def init_electrons(  # pylint: disable=dangerous-default-value
     key,
     molecule: Sequence[system.Atom],
     electrons: Sequence[int],
+    ndim: int,
     batch_size: int,
     init_width: float,
     core_electrons: Mapping[str, int] = {},
@@ -70,6 +75,7 @@ def init_electrons(  # pylint: disable=dangerous-default-value
     key: JAX RNG state.
     molecule: system.Atom objects making up the molecule.
     electrons: tuple of number of alpha and beta electrons.
+    ndim: number of dimensions
     batch_size: total number of MCMC configurations to generate across all
       devices.
     init_width: width of (atom-centred) Gaussian used to generate initial
@@ -87,61 +93,30 @@ def init_electrons(  # pylint: disable=dangerous-default-value
     of spin configurations, where 1 and -1 indicate alpha and beta electrons
     respectively.
   """
-  niter = 0
-  total_electrons = sum(atom.charge - core_electrons.get(atom.symbol, 0)
-                        for atom in molecule)
-  if total_electrons != sum(electrons):
-    if len(molecule) == 1:
-      atomic_spin_configs = [electrons]
-    else:
-      raise NotImplementedError('No initialization policy yet '
-                                'exists for charged molecules.')
-  else:
-    atomic_spin_configs = [
-        (atom.element.nalpha - core_electrons.get(atom.symbol, 0) // 2,
-         atom.element.nbeta - core_electrons.get(atom.symbol, 0) // 2)
-        for atom in molecule
-    ]
-    assert sum(sum(x) for x in atomic_spin_configs) == sum(electrons)
-    while (
-        tuple(sum(x) for x in zip(*atomic_spin_configs)) != electrons
-        and niter < max_iter
-    ):
-      i = np.random.randint(len(atomic_spin_configs))
-      nalpha, nbeta = atomic_spin_configs[i]
-      atomic_spin_configs[i] = nbeta, nalpha
-      niter += 1
 
-  if tuple(sum(x) for x in zip(*atomic_spin_configs)) == electrons:
-    # Assign each electron to an atom initially.
-    electron_positions = []
-    for i in range(2):
-      for j in range(len(molecule)):
-        atom_position = jnp.asarray(molecule[j].coords)
-        electron_positions.append(
-            jnp.tile(atom_position, atomic_spin_configs[j][i]))
-    electron_positions = jnp.concatenate(electron_positions)
+  atomic_charges = jnp.array([atom.charge for atom in molecule])
+  if len(atomic_charges) == 1:
+    electron_positions = jnp.tile(jnp.asarray(molecule[0].coords), sum(electrons))
+    electron_positions = jnp.tile(electron_positions, (batch_size, 1))
   else:
-    logging.warning(
-        'Failed to find a valid initial electron configuration after %i'
-        ' iterations. Initializing all electrons from a Gaussian distribution'
-        ' centred on the origin. This might require increasing the number of'
-        ' iterations used for pretraining and MCMC burn-in. Consider'
-        ' implementing a custom initialisation.',
-        niter,
-    )
-    electron_positions = jnp.zeros(shape=(3*sum(electrons),))
+    if sum(atomic_charges) == 0:
+      raise ValueError("If there are no charged atoms, please add only one neutral atom")
+    
+    atomic_positions = jnp.array([atom.coords for atom in molecule])
 
-  # Create a batch of configurations with a Gaussian distribution about each
-  # atom.
+    key, subkey = jax.random.split(key)
+    inds = jax.random.choice(subkey, len(molecule), shape=(batch_size, sum(electrons)), p=atomic_charges)
+
+    electron_positions = atomic_positions[inds].reshape(batch_size, sum(electrons) * ndim)
+
   key, subkey = jax.random.split(key)
   electron_positions += (
-      jax.random.normal(subkey, shape=(batch_size, electron_positions.size))
+      jax.random.normal(subkey, shape=electron_positions.shape)
       * init_width
   )
 
   electron_spins = _assign_spin_configuration(
-      electrons[0], electrons[1], batch_size
+      electrons, batch_size
   )
 
   return electron_positions, electron_spins
@@ -421,13 +396,33 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # Convert mol config into array of atomic positions and charges
   atoms = jnp.stack([jnp.array(atom.coords) for atom in cfg.system.molecule])
   charges = jnp.array([atom.charge for atom in cfg.system.molecule])
-  nspins = cfg.system.electrons
+  nspins = cfg.system.particles
 
   # Generate atomic configurations for each walker
   batch_atoms = jnp.tile(atoms[None, ...], [device_batch_size, 1, 1])
   batch_atoms = kfac_jax.utils.replicate_all_local_devices(batch_atoms)
   batch_charges = jnp.tile(charges[None, ...], [device_batch_size, 1])
   batch_charges = kfac_jax.utils.replicate_all_local_devices(batch_charges)
+
+  # Define default values for particle masses and charges
+  default_particle_masses = [
+    constants.ELECTRON_MASS, constants.ELECTRON_MASS,
+    constants.ELECTRON_MASS, constants.ELECTRON_MASS,
+    constants.MUON_MASS, constants.MUON_MASS,
+    constants.MUON_MASS, constants.MUON_MASS,
+    constants.PROTON_MASS, constants.PROTON_MASS
+  ]
+  default_particle_charges = [
+    1, 1, -1, -1, 1, 1, -1, -1, 1, 1
+  ]
+
+  # Check if particle masses and charges have been defined
+  # If they have not been defined, use default ones
+  if cfg.system.get("charges", None) == tuple():
+    cfg.system.charges = default_particle_charges[:len(cfg.system.particles)]
+
+  if cfg.system.get("masses", None) == tuple():
+    cfg.system.masses = default_particle_masses[:len(cfg.system.particles)]
 
   if cfg.debug.deterministic:
     seed = 23
@@ -450,22 +445,23 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     core_electrons = {}
 
   # Create parameters, network, and vmaped/pmaped derivations
-
   if cfg.pretrain.method == 'hf' and cfg.pretrain.iterations > 0:
-    hartree_fock = pretrain.get_hf(
-        pyscf_mol=cfg.system.get('pyscf_mol'),
-        molecule=cfg.system.molecule,
-        nspins=nspins,
-        restricted=False,
-        basis=cfg.pretrain.basis,
-        ecp=ecp,
-        core_electrons=core_electrons,
-        states=cfg.system.states,
-        excitation_type=cfg.pretrain.get('excitation_type', 'ordered'))
-    # broadcast the result of PySCF from host 0 to all other hosts
-    hartree_fock.mean_field.mo_coeff = multihost_utils.broadcast_one_to_all(
-        hartree_fock.mean_field.mo_coeff
-    )
+    raise NotImplementedError("I have not yet implemented pretraining for"
+                       "arbitrary fermions, please ask me to implement it")
+    # hartree_fock = pretrain.get_hf(
+    #     pyscf_mol=cfg.system.get('pyscf_mol'),
+    #     molecule=cfg.system.molecule,
+    #     nspins=nspins,
+    #     restricted=False,
+    #     basis=cfg.pretrain.basis,
+    #     ecp=ecp,
+    #     core_electrons=core_electrons,
+    #     states=cfg.system.states,
+    #     excitation_type=cfg.pretrain.get('excitation_type', 'ordered'))
+    # # broadcast the result of PySCF from host 0 to all other hosts
+    # hartree_fock.mean_field.mo_coeff = multihost_utils.broadcast_one_to_all(
+    #     hartree_fock.mean_field.mo_coeff
+    # )
 
   if cfg.network.make_feature_layer_fn:
     feature_layer_module, feature_layer_fn = (
@@ -476,15 +472,28 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     )
     feature_layer = make_feature_layer(
         natoms=charges.shape[0],
-        nspins=cfg.system.electrons,
+        nspins=cfg.system.particles,
         ndim=cfg.system.ndim,
         **cfg.network.make_feature_layer_kwargs)
-  else:
+  elif not cfg.system.pbc.apply_pbc:
     feature_layer = networks.make_ferminet_features(
         natoms=charges.shape[0],
-        nspins=cfg.system.electrons,
+        nspins=cfg.system.particles,
         ndim=cfg.system.ndim,
         rescale_inputs=cfg.network.get('rescale_inputs', False),
+    )
+  else:
+    if len(cfg.system.molecule) == 1 and cfg.system.molecule[0].charge == 0:
+      include_r_ae = False
+    else:
+      include_r_ae = True
+    feature_layer = pbc_feature_layer.make_pbc_feature_layer(
+        natoms=charges.shape[0],
+        nspins=cfg.system.particles,
+        ndim=cfg.system.ndim,
+        rescale_inputs=cfg.network.get('rescale_inputs', False),
+        lattice=cfg.system.pbc.lattice_vectors,
+        include_r_ae=include_r_ae
     )
 
   if cfg.network.make_envelope_fn:
@@ -493,8 +502,15 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     envelope_module = importlib.import_module(envelope_module)
     make_envelope = getattr(envelope_module, envelope_fn)
     envelope = make_envelope(**cfg.network.make_envelope_kwargs)  # type: envelopes.Envelope
-  else:
+  elif not cfg.system.pbc.apply_pbc:
     envelope = envelopes.make_isotropic_envelope()
+  else:
+    kpoints = pbc_envelopes.make_kpoints(
+      cfg.system.pbc.lattice_vectors,
+      cfg.system.particles,
+      cfg.system.pbc.min_kpoints
+    )
+    envelope = pbc_envelopes.make_multiwave_envelope(kpoints)
 
   use_complex = cfg.network.get('complex', False)
   if cfg.network.network_type == 'ferminet':
@@ -610,7 +626,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     pos, spins = init_electrons(
         subkey,
         cfg.system.molecule,
-        cfg.system.electrons,
+        cfg.system.particles,
+        cfg.system.ndim,
         batch_size=total_host_batch_size,
         init_width=cfg.mcmc.init_width,
         core_electrons=core_electrons,
@@ -721,7 +738,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         batch_orbitals=batch_orbitals,
         network_options=network.options,
         sharded_key=subkeys,
-        electrons=cfg.system.electrons,
+        electrons=cfg.system.particles,
         scf_approx=hartree_fock,
         iterations=cfg.pretrain.iterations,
         batch_size=device_batch_size,
@@ -736,6 +753,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   mcmc_step = mcmc.make_mcmc_step(
       batch_network,
       device_batch_size,
+      nspins=cfg.system.particles,
+      ndim=cfg.system.ndim,
       steps=cfg.mcmc.steps,
       atoms=atoms_to_mcmc,
       blocks=cfg.mcmc.blocks * num_states,
@@ -760,12 +779,15 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         use_scan=False,
         states=cfg.system.get('states', 0),
         **cfg.system.make_local_energy_kwargs)
-  else:
+  elif not cfg.system.pbc.apply_pbc:
     pp_symbols = cfg.system.get('pp', {'symbols': None}).get('symbols')
     local_energy_fn = hamiltonian.local_energy(
         f=signed_network,
         charges=charges,
         nspins=nspins,
+        ndim=cfg.system.ndim,
+        particle_charges=cfg.system.charges,
+        particle_masses=cfg.system.masses,
         use_scan=False,
         complex_output=use_complex,
         laplacian_method=laplacian_method,
@@ -773,6 +795,24 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         state_specific=(cfg.optim.objective == 'vmc_overlap'),
         pp_type=cfg.system.get('pp', {'type': 'ccecp'}).get('type'),
         pp_symbols=pp_symbols if cfg.system.get('use_pp') else None)
+  else:
+    pp_symbols = cfg.system.get('pp', {'symbols': None}).get('symbols')
+    local_energy_fn = pbc_hamiltonian.local_energy(
+        f=signed_network,
+        charges=charges,
+        nspins=nspins,
+        ndim=cfg.system.ndim,
+        particle_charges=cfg.system.charges,
+        particle_masses=cfg.system.masses,
+        use_scan=False,
+        complex_output=use_complex,
+        laplacian_method=laplacian_method,
+        states=cfg.system.get('states', 0),
+        state_specific=(cfg.optim.objective == 'vmc_overlap'),
+        pp_type=cfg.system.get('pp', {'type': 'ccecp'}).get('type'),
+        pp_symbols=pp_symbols if cfg.system.get('use_pp') else None,
+        lattice_vectors=cfg.system.pbc.lattice_vectors,
+        convergence_radius=cfg.system.pbc.convergence_radius)
 
   if cfg.optim.get('spin_energy', 0.0) > 0.0:
     # Minimize <H + c * S^2> instead of just <H>
@@ -913,9 +953,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   if mcmc_width_ckpt is not None:
     mcmc_width = kfac_jax.utils.replicate_all_local_devices(mcmc_width_ckpt[0])
   else:
-    mcmc_width = kfac_jax.utils.replicate_all_local_devices(
-        jnp.asarray(cfg.mcmc.move_width))
-  pmoves = np.zeros(cfg.mcmc.adapt_frequency)
+    width_arr = jnp.ones((len(cfg.system.particles),))*cfg.mcmc.move_width
+    mcmc_width = kfac_jax.utils.replicate_all_local_devices(width_arr)
+  pmoves = np.zeros((len(cfg.system.particles), cfg.mcmc.adapt_frequency))
 
   if t_init == 0:
     logging.info('Burning in MCMC chain for %d steps', cfg.mcmc.burn_in)
@@ -1029,13 +1069,13 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       if t % cfg.log.stats_frequency == 0:
         logging_str = ('Step %05d: '
                        '%03.4f E_h, exp. variance=%03.4f E_h^2, pmove=%0.2f')
-        logging_args = t, loss, weighted_stats.variance, pmove
+        logging_args = t, loss, weighted_stats.variance, np.mean(pmove)
         writer_kwargs = {
             'step': t,
             'energy': np.asarray(loss),
             'ewmean': np.asarray(weighted_stats.mean),
             'ewvar': np.asarray(weighted_stats.variance),
-            'pmove': np.asarray(pmove),
+            'pmove': np.asarray(np.mean(pmove)),
         }
         for key in observable_data:
           obs_data = observable_data[key]
