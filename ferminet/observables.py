@@ -484,3 +484,75 @@ def cal_rho_r(
     return state
 
   return init_state, density_estimator_obc if not apply_pbc else density_estimator_pbc
+
+
+def cal_pcf(
+    nspins: Tuple[int, ...],
+    rmax: float,
+    nbins: int,
+    elements: int,
+    apply_pbc: bool,
+    lattice_vectors: jnp.ndarray,
+) -> Observable:
+  """Evaluates the pair distribution function of each species.
+  Args:
+    nspins: Tuple containing the number of particles of each species
+    rmax: Maximum distance to consider
+    nbins: How many bins to use
+    target_species: Species to compute the pair distribution function for
+    apply_pbc: Whether or not we are on periodic boundary conditions
+    lattice_vectors: Array of lattice vectors. Unused if apply_pbc is False
+  Returns:
+    callable with same arguments as the network and returns the contribution to
+    the Monte Carlo estimate of the pair distribution function.
+  """ 
+  grids = jnp.linspace(0, rmax, nbins + 1)
+  dr = grids[1] - grids[0]
+  bin_volume = 4 * jnp.pi / 3.0 * (grids[1:]**3 - grids[:-1]**3)
+  init_state = jnp.array([grids[:-1] + dr / 2, jnp.zeros(nbins)])  # state[0] is the bin centers, state[1] is the histogram
+
+
+  def pcf_estimator(
+      params: networks.ParamTree,
+      data: networks.FermiNetData,
+      state: jnp.ndarray,
+  ) -> jnp.ndarray:
+    """Returns the pair distribution function from electron configurations x."""
+    del params  # unused
+
+    n_particles = sum(nspins)
+    pos = data.positions.reshape(-1, n_particles, 3)
+    target_species = (elements + n_particles) % n_particles
+    def pos_to_rabs(pos):
+      """Computes the absolute distances between the target species and all others."""
+      # Compute the distance vectors from the target species to all others
+      rvec = jnp.concatenate([pos[:target_species, :], pos[target_species+1:, :]], axis=0) - pos[target_species, :]
+      if apply_pbc:
+        inv_lattice_vectors = jnp.linalg.inv(lattice_vectors)
+        rvec = jnp.einsum('ij,kj->ki', inv_lattice_vectors, rvec)
+        rvec = jnp.mod(rvec + 0.5, 1) - 0.5
+        rvec = jnp.einsum('ij,kj->ki', lattice_vectors, rvec)
+      rabs = jnp.linalg.norm(rvec, axis=-1)
+      return rabs
+    
+    batch_pos_to_rabs = jax.vmap(pos_to_rabs, in_axes=0, out_axes=0)
+    rabs = batch_pos_to_rabs(pos)
+
+    # Compute the histogram of distances
+    hist, _ = jnp.histogram(rabs.flatten(), bins=nbins, range=(0, rmax))
+    hist = hist / bin_volume
+    
+
+    rho_0 = (n_particles - 1) / jnp.linalg.det(lattice_vectors) if apply_pbc else 1.0
+    hist /= rho_0 * pos.shape[0]  # normalize by number of samples
+    
+    state = state.at[1].add(hist)
+    
+    return state
+
+  return init_state, pcf_estimator
+  
+    
+
+
+ 

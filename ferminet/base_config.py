@@ -239,6 +239,7 @@ def default() -> ml_collections.ConfigDict:
           # mean of the distance to the nuclei.
           'scale_by_nuclear_distance': False,
           'blocks': 1,  # Number of blocks to split the MCMC sampling into
+          'fake_energy': False,  # If true, use a fake energy to sample
       },
       'network': {
           'network_type': 'ferminet',  # One of 'ferminet' or 'psiformer'.
@@ -325,6 +326,12 @@ def default() -> ml_collections.ConfigDict:
             'lim': 10.,
             'nbins': 256,
           },
+          'pcf':{# pair correlation function
+            'calculate': False,
+            'rmax': 10.,
+            'nbins': 256,
+            'elements': -1,
+          }
       },
       'debug': {
           # Check optimizer state, parameters and loss and raise an exception if

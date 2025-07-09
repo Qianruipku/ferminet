@@ -27,6 +27,7 @@ from ferminet import constants
 from ferminet import curvature_tags_and_blocks
 from ferminet import envelopes
 from ferminet import hamiltonian
+from ferminet import fake_hamiltonian
 from ferminet import loss as qmc_loss_functions
 from ferminet import mcmc
 from ferminet import networks
@@ -702,7 +703,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   if cfg.observables.rho_r.calculate:
     (observable_states['rho_r'], 
      observable_fns['rho_r']) = observables.cal_rho_r(
-      cfg.system.electrons,
+      cfg.system.particles,
       cfg.system.ndim,
       cfg.observables.rho_r.lim,
       cfg.observables.rho_r.nbins,
@@ -711,6 +712,17 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     )
     rho_r_file = open(
         os.path.join(ckpt_save_path, 'rho_r.npy'), 'ab')
+  
+  if cfg.observables.pcf.calculate:
+    (observable_states['pcf'],
+     observable_fns['pcf']) = observables.cal_pcf(
+        cfg.system.particles,
+        cfg.observables.pcf.rmax,
+        cfg.observables.pcf.nbins,
+        cfg.observables.pcf.elements,
+        cfg.system.pbc.apply_pbc,
+        cfg.system.pbc.lattice_vectors
+    )
   
   # Initialisation done. We now want to have different PRNG streams on each
   # device. Shard the key over devices
@@ -779,6 +791,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         use_scan=False,
         states=cfg.system.get('states', 0),
         **cfg.system.make_local_energy_kwargs)
+  elif cfg.mcmc.fake_energy:
+    local_energy_fn = fake_hamiltonian.local_energy()
   elif not cfg.system.pbc.apply_pbc:
     pp_symbols = cfg.system.get('pp', {'symbols': None}).get('symbols')
     local_energy_fn = hamiltonian.local_energy(
@@ -1045,6 +1059,18 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
         observable_states['density'] = density_update(
             subkeys, params, data, observable_states['density'])
+      if cfg.observables.rho_r.calculate:
+        observable_states['rho_r'] = observable_data['rho_r']
+      if cfg.observables.pcf.calculate:
+        observable_states['pcf'] = observable_data['pcf']
+        if (t+1) % 10000 == 0:
+          pcf_data = np.array(observable_data['pcf'])
+          pcf_data[1] /= (t + 1)
+          name = 'pcf_' + str((t+1)//10000) + '.txt'
+          pcf_file = open(
+            os.path.join(ckpt_save_path, name), 'w')
+          np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
+          pcf_file.close()
 
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(
@@ -1123,4 +1149,4 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     if cfg.observables.density:
       density_matrix_file.close()
     if cfg.observables.rho_r.calculate:
-      rho_r_file.close()
+      rho_r_file.close() 
