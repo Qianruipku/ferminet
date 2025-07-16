@@ -328,6 +328,7 @@ def default() -> ml_collections.ConfigDict:
           },
           'pcf':{# pair correlation function
             'calculate': False,
+            'save_freq': 10000,
             'rmax': 10.,
             'nbins': 256,
             'elements': -1,

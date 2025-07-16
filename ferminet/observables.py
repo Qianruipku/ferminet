@@ -414,7 +414,7 @@ def cal_rho_r(
     nbins: int,
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
-) -> Observable:
+) -> Tuple[jnp.ndarray, Observable]:
   """Evaluates the single-particle density of each species.
 
   Args:
@@ -493,7 +493,7 @@ def cal_pcf(
     elements: int,
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
-) -> Observable:
+) -> Tuple[jnp.ndarray, Observable]:
   """Evaluates the pair distribution function of each species.
   Args:
     nspins: Tuple containing the number of particles of each species
@@ -509,7 +509,7 @@ def cal_pcf(
   grids = jnp.linspace(0, rmax, nbins + 1)
   dr = grids[1] - grids[0]
   bin_volume = 4 * jnp.pi / 3.0 * (grids[1:]**3 - grids[:-1]**3)
-  init_state = jnp.array([grids[:-1] + dr / 2, jnp.zeros(nbins)])  # state[0] is the bin centers, state[1] is the histogram
+  init_state = jnp.zeros(nbins)
 
 
   def pcf_estimator(
@@ -546,11 +546,11 @@ def cal_pcf(
     rho_0 = (n_particles - 1) / jnp.linalg.det(lattice_vectors) if apply_pbc else 1.0
     hist /= rho_0 * pos.shape[0]  # normalize by number of samples
     
-    state = state.at[1].add(hist)
+    state += hist
     
     return state
 
-  return init_state, pcf_estimator
+  return grids[:-1] + dr / 2, (init_state, pcf_estimator)
   
     
 

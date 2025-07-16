@@ -714,7 +714,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         os.path.join(ckpt_save_path, 'rho_r.npy'), 'ab')
   
   if cfg.observables.pcf.calculate:
-    (observable_states['pcf'],
+    pcf_grids, (observable_states['pcf'],
      observable_fns['pcf']) = observables.cal_pcf(
         cfg.system.particles,
         cfg.observables.pcf.rmax,
@@ -1063,10 +1063,10 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         observable_states['rho_r'] = observable_data['rho_r']
       if cfg.observables.pcf.calculate:
         observable_states['pcf'] = observable_data['pcf']
-        if (t+1) % 10000 == 0:
-          pcf_data = np.array(observable_data['pcf'])
-          pcf_data[1] /= (t + 1)
-          name = 'pcf_' + str((t+1)//10000) + '.txt'
+        freq = cfg.observables.pcf.save_freq
+        if (t+1) % freq == 0:
+          pcf_data = np.array([pcf_grids, observable_data['pcf']/ (t + 1)])
+          name = 'pcf_' + str((t+1)//freq) + '.txt'
           pcf_file = open(
             os.path.join(ckpt_save_path, name), 'w')
           np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
