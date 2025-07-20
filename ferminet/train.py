@@ -1071,8 +1071,13 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         if (t+1) % freq == 0:
           pcf_data = np.array([pcf_grids, observable_data['pcf']/ (t + 1)])
           name = 'pcf_' + str((t+1)//freq) + '.txt'
-          pcf_file = open(
-            os.path.join(ckpt_save_path, name), 'w')
+          pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
+          np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
+          pcf_file.close()
+        if (t+1) == cfg.optim.iterations:
+          pcf_data = np.array([pcf_grids, observable_data['pcf']/ (t + 1)])
+          name = 'pcf_final.txt'
+          pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
           np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
           pcf_file.close()
 
