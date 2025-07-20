@@ -75,7 +75,7 @@ def mh_accept(x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx):
   if jnp.ndim(num_accepts) == 0:
     num_accepts += jnp.sum(cond)
   else:
-    num_accepts = num_accepts.at[:, species_idx].add(cond.astype(jnp.float32))
+    num_accepts = num_accepts.at[species_idx].add(jnp.sum(cond))
   return x_new, key, lp_new, num_accepts
 
 
@@ -128,7 +128,6 @@ def mh_update(
   start_idx = 0
   x1 = data.positions
   if jnp.ndim(stddev) == 0:
-    print("Using isotropic Gaussian proposal with stddev", stddev)
     x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
     lp_2 = 2.0 * f(
         params, x2, data.spins, data.atoms, data.charges
@@ -301,13 +300,15 @@ def make_mcmc_step(batch_network,
     if sample_all:
       new_data, key, _, num_accepts = lax.fori_loop(
           0, nsteps, step_fn, (data, key, logprob, 0.0))
-      pmove = jnp.sum(num_accepts) / (nsteps * batch_per_device)
+      assert jnp.ndim(num_accepts) == 0
+      pmove = num_accepts / (nsteps * batch_per_device)
     else:
       new_data, key, _, num_accepts = lax.fori_loop(
           0, nsteps, step_fn, (data, key, logprob, 
-          jnp.zeros((batch_per_device, nspecies)))
+          jnp.zeros(nspecies))
       )
-      pmove = jnp.sum(num_accepts, axis = 0) / (nsteps * batch_per_device)
+      assert jnp.ndim(num_accepts) == 1
+      pmove = num_accepts / (nsteps * batch_per_device)
     pmove = constants.pmean(pmove)
     return new_data, pmove
 
