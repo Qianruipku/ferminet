@@ -31,10 +31,12 @@ class HEGTest(absltest.TestCase, ReferenceTestMixin):
         
         # Set up basic HEG configuration
         self.cfg = base_config.default()
-        self.cfg.system.electrons = (2, 2)
+        self.cfg.system.particles = (2, 2)
+        self.cfg.system.charges = (-1., -1.)
+        self.cfg.system.masses = (1., 1.)
         self.cfg.system.molecule = [system.Atom("X", (0., 0., 0.))]
         self.cfg.pretrain.method = None
-        self.cfg.system.pbc.lattice_vectors = _sc_lattice_vecs(1.0, sum(self.cfg.system.electrons))
+        self.cfg.system.pbc.lattice_vectors = _sc_lattice_vecs(1.0, sum(self.cfg.system.particles))
         self.cfg.system.pbc.apply_pbc = True
         self.cfg.network.full_det = True
 
@@ -42,8 +44,9 @@ class HEGTest(absltest.TestCase, ReferenceTestMixin):
         self.cfg.network.ferminet.hidden_dims = ((16, 4),) * 2
         self.cfg.network.determinants = 2
         self.cfg.batch_size = 32
-        self.cfg.pretrain.iterations = 5
+        self.cfg.pretrain.iterations = 0
         self.cfg.mcmc.burn_in = 5
+        self.cfg.mcmc.sample_all = True
         self.cfg.optim.iterations = 5
         
         # Make training deterministic

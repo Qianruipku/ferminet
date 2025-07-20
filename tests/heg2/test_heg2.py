@@ -1,15 +1,7 @@
-"""Tests for He atom training and checkpoint comparison."""
-
 import os
-import tempfile
-import shutil
-import subprocess
-from pathlib import Path
-
-import numpy as np
-from absl.testing import absltest
-import pytest
 import sys
+from pathlib import Path
+from absl.testing import absltest
 
 # Add tools directory to path for importing the base class
 sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
@@ -18,10 +10,16 @@ from reference_test_base import ReferenceTestMixin
 from ferminet.utils import system
 from ferminet import base_config
 from ferminet import train
+import numpy as np
 
+def _sc_lattice_vecs(rs: float, nelec: int) -> np.ndarray:
+  """Returns simple cubic lattice vectors with Wigner-Seitz radius rs."""
+  volume = (4 / 3) * np.pi * (rs**3) * nelec
+  length = volume**(1 / 3)
+  return length * np.eye(3)
 
-class HeAtomTest(absltest.TestCase, ReferenceTestMixin):
-    """Test He atom training and checkpoint validation."""
+class HEGTest(absltest.TestCase, ReferenceTestMixin):
+    """Example test for HEG using the reference management system."""
 
     def setUp(self):
         """Set up test environment."""
@@ -30,73 +28,73 @@ class HeAtomTest(absltest.TestCase, ReferenceTestMixin):
         
         # Create temporary directory for test outputs
         self.test_dir = "_tmp"
-        self.ref_dir = str(Path(__file__).parent) + "/restart"
-
-        # Set up basic He atom configuration
+        
+        # Set up basic HEG configuration
         self.cfg = base_config.default()
-        self.cfg.system.particles = (1, 1)
+        self.cfg.system.particles = (2, 2)
         self.cfg.system.charges = (-1., -1.)
         self.cfg.system.masses = (1., 1.)
-        self.cfg.system.molecule = [system.Atom('He', (0, 0, 0))]
-        
+        self.cfg.system.molecule = [system.Atom("X", (0., 0., 0.))]
+        self.cfg.pretrain.method = None
+        self.cfg.system.pbc.lattice_vectors = _sc_lattice_vecs(1.0, sum(self.cfg.system.particles))
+        self.cfg.system.pbc.apply_pbc = True
+        self.cfg.network.full_det = True
+
         # Small network for fast testing
         self.cfg.network.ferminet.hidden_dims = ((16, 4),) * 2
         self.cfg.network.determinants = 2
         self.cfg.batch_size = 32
         self.cfg.pretrain.iterations = 0
         self.cfg.mcmc.burn_in = 5
-        self.cfg.mcmc.sample_all = True
+        self.cfg.mcmc.sample_all = False
         self.cfg.optim.iterations = 5
         
-        # Make training deterministic for reproducible results
+        # Make training deterministic
         self.cfg.debug.deterministic = True
         
         # Set paths
         self.cfg.log.save_path = self.test_dir
-        self.cfg.log.restore_path = self.ref_dir
+        # self.cfg.log.restore_path = self.test_dir
         self.cfg.log.save_freq = 4
 
     def tearDown(self):
-        """Clean up test environment and optionally update reference files."""
-        self.cleanup_reference_management()
+        """Clean up test environment."""
+        self.cleanup_reference_management() 
         
-        # Remove temporary directory
         if os.path.exists(self.test_dir):
+            import shutil
             shutil.rmtree(self.test_dir)
-        
+            
         super().tearDown()
 
-    def test_checkpoint_comparison_with_reference(self):
-        """Compare generated checkpoint with reference file."""
-        # Define paths
-        test_dir_path = Path(__file__).parent
-        ref_npz_file = test_dir_path / "ref_qmcjax_ckpt_000004.npz"
+    def test_heg_training_checkpoint_comparison(self):
+        """Test HEG training and compare with reference files."""
+        # Define file paths
         npz_file = os.path.join(self.test_dir, "qmcjax_ckpt_000004.npz")
         csv_file = os.path.join(self.test_dir, "train_stats.csv")
+        
+        test_dir_path = Path(__file__).parent
+        ref_npz_file = test_dir_path / "ref_qmcjax_ckpt_000004.npz"
         ref_csv_file = test_dir_path / "ref_train_stats.csv"
         
         # Register files for potential reference updating
         self._register_generated_file("ref_qmcjax_ckpt_000004.npz", npz_file)
         self._register_generated_file("ref_train_stats.csv", csv_file)
         
-        # Run training to generate checkpoint
+        # Run training
         train.train(self.cfg)
-        
-        # Use the base class comparison method
+
         comparisons = [
             {
                 'generated': npz_file,
-                'reference': str(ref_npz_file),
-                'type': 'npz'
+                'reference': str(ref_npz_file)
             },
             {
                 'generated': csv_file,
-                'reference': str(ref_csv_file),
-                'type': 'csv'
+                'reference': str(ref_csv_file)
             }
         ]
         
-        # Compare with references (automatically handles UPDATE_REFERENCES mode)
         self.compare_with_references(
             comparisons=comparisons,
             tolerance="1e-5",

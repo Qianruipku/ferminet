@@ -769,6 +769,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       ndim=cfg.system.ndim,
       steps=cfg.mcmc.steps,
       atoms=atoms_to_mcmc,
+      sample_all= cfg.mcmc.sample_all,
       blocks=cfg.mcmc.blocks * num_states,
   )
   # Construct loss and optimizer
@@ -967,7 +968,10 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   if mcmc_width_ckpt is not None:
     mcmc_width = kfac_jax.utils.replicate_all_local_devices(mcmc_width_ckpt[0])
   else:
-    width_arr = jnp.ones((len(cfg.system.particles),))*cfg.mcmc.move_width
+    if cfg.mcmc.sample_all:
+      width_arr = jnp.asarray(cfg.mcmc.move_width)
+    else:
+      width_arr = jnp.ones((len(cfg.system.particles),))*cfg.mcmc.move_width
     mcmc_width = kfac_jax.utils.replicate_all_local_devices(width_arr)
   pmoves = np.zeros((len(cfg.system.particles), cfg.mcmc.adapt_frequency))
 

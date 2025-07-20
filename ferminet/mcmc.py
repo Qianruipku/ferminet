@@ -72,7 +72,10 @@ def mh_accept(x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx):
   cond = ratio > rnd
   x_new = jnp.where(cond[..., None], x2, x1)
   lp_new = jnp.where(cond, lp_2, lp_1)
-  num_accepts = num_accepts.at[:, species_idx].add(cond.astype(jnp.float32))
+  if jnp.ndim(num_accepts) == 0:
+    num_accepts += jnp.sum(cond)
+  else:
+    num_accepts = num_accepts.at[:, species_idx].add(cond.astype(jnp.float32))
   return x_new, key, lp_new, num_accepts
 
 
@@ -124,22 +127,34 @@ def mh_update(
   key, subkey = jax.random.split(key)
   start_idx = 0
   x1 = data.positions
-  for species_idx, nspecies in enumerate(nspins):
-    species_width = stddev[species_idx]
-    species_shape = (x1.shape[0], nspecies * ndim)
-
-    x2 = x1.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].add(
-        species_width *
-        jax.random.normal(subkey, shape=species_shape))  # proposal
-    lp_2 = 2. * f(params, x2, data.spins, data.atoms, data.charges)  # log prob of proposal
+  if jnp.ndim(stddev) == 0:
+    print("Using isotropic Gaussian proposal with stddev", stddev)
+    x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
+    lp_2 = 2.0 * f(
+        params, x2, data.spins, data.atoms, data.charges
+    )  # log prob of proposal
     ratio = lp_2 - lp_1
+    x_new, key, lp_new, num_accepts = mh_accept(
+        x1, x2, lp_1, lp_2, ratio, key, num_accepts, 0)
+  else:
+    for species_idx, nspecies in enumerate(nspins):
+      species_width = stddev[species_idx]
+      species_shape = (x1.shape[0], nspecies * ndim)
 
-    start_idx += nspecies
-    key, subkey = jax.random.split(key)
-    x1, key, lp_1, num_accepts = mh_accept(
-        x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx)
-  new_data = networks.FermiNetData(**(dict(data) | {'positions': x1}))
-  return new_data, key, lp_1, num_accepts
+      x2 = x1.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].add(
+          species_width *
+          jax.random.normal(subkey, shape=species_shape))  # proposal
+      lp_2 = 2. * f(params, x2, data.spins, data.atoms, data.charges)  # log prob of proposal
+      ratio = lp_2 - lp_1
+
+      start_idx += nspecies
+      key, subkey = jax.random.split(key)
+      x1, key, lp_1, num_accepts = mh_accept(
+          x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx)
+    x_new = x1
+    lp_new = lp_1
+  new_data = networks.FermiNetData(**(dict(data) | {'positions': x_new}))
+  return new_data, key, lp_new, num_accepts
 
 
 def mh_block_update(
@@ -228,6 +243,7 @@ def make_mcmc_step(batch_network,
                    ndim,
                    steps=10,
                    atoms=None,
+                   sample_all=True,
                    blocks=1):
   """Creates the MCMC step function.
 
@@ -282,11 +298,16 @@ def make_mcmc_step(batch_network,
     logprob = 2.0 * batch_network(
         params, pos, data.spins, data.atoms, data.charges
     )
-    new_data, key, _, num_accepts = lax.fori_loop(
-        0, nsteps, step_fn, (data, key, logprob, 
-        jnp.zeros((batch_per_device, nspecies)))
-    )
-    pmove = jnp.sum(num_accepts, axis = 0) / (nsteps * batch_per_device)
+    if sample_all:
+      new_data, key, _, num_accepts = lax.fori_loop(
+          0, nsteps, step_fn, (data, key, logprob, 0.0))
+      pmove = jnp.sum(num_accepts) / (nsteps * batch_per_device)
+    else:
+      new_data, key, _, num_accepts = lax.fori_loop(
+          0, nsteps, step_fn, (data, key, logprob, 
+          jnp.zeros((batch_per_device, nspecies)))
+      )
+      pmove = jnp.sum(num_accepts, axis = 0) / (nsteps * batch_per_device)
     pmove = constants.pmean(pmove)
     return new_data, pmove
 
@@ -320,10 +341,18 @@ def update_mcmc_width(
   """
 
   t_since_mcmc_update = t % adapt_frequency
-  if t > 0 and t_since_mcmc_update == 0:
-    mean_pmoves = jnp.mean(pmoves, axis=1)
-    width = width.at[:,jnp.where(mean_pmoves > pmove_max)].multiply(1.1)
-    width = width.at[:,jnp.where(mean_pmoves < pmove_min)].divide(1.1)
-    pmoves[:,:] = 0
-  pmoves[:,t%adapt_frequency] = pmove
+  if np.ndim(width) == 0:
+    pmoves[t_since_mcmc_update] = pmove.reshape(-1)[0].item()
+    if t > 0 and t_since_mcmc_update == 0:
+      if np.mean(pmoves) > pmove_max:
+        width *= 1.1
+      elif np.mean(pmoves) < pmove_min:
+        width /= 1.1
+  else:
+      if t > 0 and t_since_mcmc_update == 0:
+        mean_pmoves = jnp.mean(pmoves, axis=1)
+        width = width.at[jnp.where(mean_pmoves > pmove_max)].multiply(1.1)
+        width = width.at[jnp.where(mean_pmoves < pmove_min)].divide(1.1)
+        pmoves[:,:] = 0
+      pmoves[:,t%adapt_frequency] = pmove
   return width, pmoves
