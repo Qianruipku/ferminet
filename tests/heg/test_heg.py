@@ -10,6 +10,7 @@ from reference_test_base import ReferenceTestMixin
 from ferminet.utils import system
 from ferminet import base_config
 from ferminet import train
+from ferminet.pbc import envelopes
 import numpy as np
 
 def _sc_lattice_vecs(rs: float, nelec: int) -> np.ndarray:
@@ -34,8 +35,19 @@ class HEGTest(absltest.TestCase, ReferenceTestMixin):
         self.cfg.system.electrons = (2, 2)
         self.cfg.system.molecule = [system.Atom("X", (0., 0., 0.))]
         self.cfg.pretrain.method = None
-        self.cfg.system.pbc.lattice_vectors = _sc_lattice_vecs(1.0, sum(self.cfg.system.electrons))
-        self.cfg.system.pbc.apply_pbc = True
+        lattice = _sc_lattice_vecs(1.0, sum(self.cfg.system.electrons))
+        kpoints = envelopes.make_kpoints(lattice, self.cfg.system.electrons)
+        self.cfg.system.make_local_energy_fn = "ferminet.pbc.hamiltonian.local_energy"
+        self.cfg.system.make_local_energy_kwargs = {"lattice": lattice, "heg": True}
+        self.cfg.network.make_feature_layer_fn = (
+            "ferminet.pbc.feature_layer.make_pbc_feature_layer")
+        self.cfg.network.make_feature_layer_kwargs = {
+            "lattice": lattice,
+            "include_r_ae": False
+        }
+        self.cfg.network.make_envelope_fn = (
+            "ferminet.pbc.envelopes.make_multiwave_envelope")
+        self.cfg.network.make_envelope_kwargs = {"kpoints": kpoints}
         self.cfg.network.full_det = True
 
         # Small network for fast testing
