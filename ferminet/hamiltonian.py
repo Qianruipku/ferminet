@@ -138,6 +138,7 @@ def local_kinetic_energy(
         result -= 1.j * jnp.sum(primal * phase_primal)
       return result
 
+  # NOTE: Folx Laplacian may exhibit numerical variations (~1e-4 for float32) across different runs
   elif laplacian_method == 'folx':
     def _lapl_over_f(params, data):
       f_closure = lambda x: f(params, x, data.spins, data.atoms, data.charges)

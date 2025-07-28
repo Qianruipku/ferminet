@@ -107,7 +107,8 @@ def init_electrons(  # pylint: disable=dangerous-default-value
         tuple(sum(x) for x in zip(*atomic_spin_configs)) != electrons
         and niter < max_iter
     ):
-      i = np.random.randint(len(atomic_spin_configs))
+      key, subkey = jax.random.split(key)
+      i = jax.random.randint(subkey, shape=(), minval=0, maxval=len(atomic_spin_configs))
       nalpha, nbeta = atomic_spin_configs[i]
       atomic_spin_configs[i] = nbeta, nalpha
       niter += 1
@@ -452,6 +453,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # Create parameters, network, and vmaped/pmaped derivations
 
   if cfg.pretrain.method == 'hf' and cfg.pretrain.iterations > 0:
+    # PySCF may produce slightly different results across runs
     hartree_fock = pretrain.get_hf(
         pyscf_mol=cfg.system.get('pyscf_mol'),
         molecule=cfg.system.molecule,
