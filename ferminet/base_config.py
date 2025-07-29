@@ -327,11 +327,17 @@ def default() -> ml_collections.ConfigDict:
             'lim': 10.,
             'nbins': 256,
           },
-          'pcf':{# pair correlation function
+          'pcf':{  # pair correlation function
             'calculate': False,
             'save_freq': 10000,
             'rmax': 10.,
             'nbins': 256,
+            'elements': -1,
+          },
+          'apmd': {  # annihilating-pair momentum density
+            'calculate': False,
+            'save_freq': 10000,
+            'ecut': 50.0,
             'elements': -1,
           }
       },

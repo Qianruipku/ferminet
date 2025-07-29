@@ -724,6 +724,17 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         cfg.system.pbc.lattice_vectors
     )
   
+  if cfg.observables.apmd.calculate:
+    pw_g, (observable_states['apmd'],
+      observable_fns['apmd']) = observables.cal_apmd(
+        signed_network,
+        cfg.system.particles,
+        cfg.observables.apmd.ecut,
+        cfg.observables.apmd.elements,
+        cfg.system.pbc.apply_pbc,
+        cfg.system.pbc.lattice_vectors
+      )
+  
   # Initialisation done. We now want to have different PRNG streams on each
   # device. Shard the key over devices
   sharded_key = kfac_jax.utils.make_different_rng_key_on_all_devices(key)
@@ -1080,6 +1091,21 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
           pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
           np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
           pcf_file.close()
+      if cfg.observables.apmd.calculate:
+        observable_states['apmd'] = observable_data['apmd']
+        freq = cfg.observables.apmd.save_freq
+        if (t+1) % freq == 0:
+          apmd_data = np.array([pw_g, observable_data['apmd'][0]/ (t + 1)])
+          name = 'apmd_' + str((t+1)//freq) + '.txt'
+          apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
+          np.savetxt(apmd_file, apmd_data.T, fmt='%.6f')
+          apmd_file.close()
+        if (t+1) == cfg.optim.iterations:
+          apmd_data = np.array([pw_g, observable_data['apmd'][0]/ (t + 1)])
+          name = 'apmd_final.txt'
+          apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
+          np.savetxt(apmd_file, apmd_data.T, fmt='%.6f')
+          apmd_file.close()
 
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(

@@ -80,13 +80,16 @@ class PositronTest(absltest.TestCase, ReferenceTestMixin):
         ref_csv_file = test_dir_path / "ref_train_stats.csv"
         pcf_file = os.path.join(self.test_dir, "pcf_final.txt")
         ref_pcf_file = test_dir_path / "ref_pcf.txt"
+        apmd_file = os.path.join(self.test_dir, "apmd_final.txt")
+        ref_apmd_file = test_dir_path / "ref_apmd.txt"
 
         
         # Register files for potential reference updating
         self._register_generated_file("ref_qmcjax_ckpt_000004.npz", npz_file)
         self._register_generated_file("ref_train_stats.csv", csv_file)
         self._register_generated_file("ref_pcf.txt", pcf_file)
-        
+        self._register_generated_file("ref_apmd.txt", apmd_file)
+
         # train the model
         train.train(self.cfg)
 
@@ -95,6 +98,8 @@ class PositronTest(absltest.TestCase, ReferenceTestMixin):
         self.cfg.optim.iterations = 5
         self.cfg.observables.pcf.calculate = True
         self.cfg.observables.pcf.rmax = 4
+        self.cfg.observables.apmd.calculate = True
+        self.cfg.observables.apmd.ecut = 10.0
         train.train(self.cfg)
 
         # Use the base class comparison method
@@ -112,6 +117,11 @@ class PositronTest(absltest.TestCase, ReferenceTestMixin):
             {
                 'generated': pcf_file,
                 'reference': str(ref_pcf_file),
+                'type': 'txt'
+            },
+            {
+                'generated': apmd_file,
+                'reference': str(ref_apmd_file),
                 'type': 'txt'
             }
         ]
