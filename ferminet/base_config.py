@@ -338,6 +338,8 @@ def default() -> ml_collections.ConfigDict:
             'calculate': False,
             'save_freq': 10000,
             'ecut': 50.0,
+            'dq': 0.1,
+            'crystal_direction': '100',
             'elements': -1,
           }
       },

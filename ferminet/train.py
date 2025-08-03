@@ -41,6 +41,7 @@ from ferminet.utils import writers
 import ferminet.pbc.hamiltonian as pbc_hamiltonian
 import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
+from ferminet.observable.apmd import write_apmd_1d
 import jax
 from jax.experimental import multihost_utils
 import jax.numpy as jnp
@@ -725,7 +726,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     )
   
   if cfg.observables.apmd.calculate:
-    pw_g, (observable_states['apmd'],
+    g_grids, pw_g, (observable_states['apmd'],
       observable_fns['apmd']) = observables.cal_apmd(
         signed_network,
         cfg.system.particles,
@@ -1106,6 +1107,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
           apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
           np.savetxt(apmd_file, apmd_data.T, fmt='%.6f')
           apmd_file.close()
+          write_apmd_1d(crystal_direction = cfg.observables.apmd.crystal_direction,
+                        ecut=cfg.observables.apmd.ecut,
+                        dq=cfg.observables.apmd.dq,
+                        grid_points=g_grids,
+                        density=observable_data['apmd'][0]/ (t + 1),
+                        ckpt_save_path=ckpt_save_path)
 
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(

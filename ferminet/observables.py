@@ -561,7 +561,7 @@ def cal_apmd(
     elements: int,
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
-) -> Tuple[jnp.ndarray, Observable]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, Observable]:
   """Evaluates the annihilating pair moment density.
 
   Args:
@@ -650,4 +650,4 @@ def cal_apmd(
     state += jax.lax.fori_loop(0, nwalkers, loop_walker, jnp.zeros((n_planewaves), dtype=jnp.float32)) / (n_particles * nwalkers)
 
     return state
-  return g_magnitudes, (init_state, apmd_estimator)
+  return pwgrids, g_magnitudes, (init_state, apmd_estimator)
