@@ -523,7 +523,8 @@ def cal_pcf(
     del params  # unused
 
     n_particles = sum(nspins)
-    pos = data.positions.reshape(-1, n_particles, 3)
+    n_devices_local = data.positions.shape[0]
+    pos = data.positions.reshape(n_devices_local, -1, n_particles, 3)
     target_species = (elements + n_particles) % n_particles
     def pos_to_rabs(pos):
       """Computes the absolute distances between the target species and all others."""
@@ -538,18 +539,22 @@ def cal_pcf(
       return rabs
     
     batch_pos_to_rabs = jax.vmap(pos_to_rabs, in_axes=0, out_axes=0)
-    rabs = batch_pos_to_rabs(pos)
-
-    # Compute the histogram of distances
-    hist, _ = jnp.histogram(rabs.flatten(), bins=nbins, range=(0, rmax))
-    hist = hist / bin_volume
-    
+    para_pos_to_rabs = constants.pmap(batch_pos_to_rabs)
+    rabs = para_pos_to_rabs(pos)
 
     rho_0 = (n_particles - 1) / jnp.linalg.det(lattice_vectors) if apply_pbc else 1.0
-    hist /= rho_0 * pos.shape[0]  # normalize by number of samples
-    
-    state += hist
-    
+    nwalker_per_device = pos.shape[1]
+
+    def compute_hist_per_device(rabs_device):
+      hist, _ = jnp.histogram(rabs_device.flatten(), bins=nbins, range=(0, rmax))
+      hist = hist / bin_volume
+      hist /= rho_0 * nwalker_per_device
+      hist = constants.pmean(hist)
+      return hist
+    hist_all = constants.pmap(compute_hist_per_device)(rabs)
+
+    state += hist_all[0]
+
     return state
 
   return grids[:-1] + dr / 2, (init_state, pcf_estimator)
@@ -602,7 +607,7 @@ def cal_apmd(
     n_particles = sum(nspins)
     n_electrons = n_particles - 1  # exclude the positron
     pos = data.positions.reshape(-1, n_particles, 3)
-    nwalkers = pos.shape[0]
+    nwalker_per_device = pos.shape[0]
     # target_species = (elements + n_particles) % n_particles
     target_species = -1
 
@@ -625,14 +630,14 @@ def cal_apmd(
     copy_spins = jnp.tile(data.spins[:, None, :], (1, n_electrons, 1)).reshape(-1, data.spins.shape[-1])
     copy_atoms = jnp.tile(data.atoms[:, None, :, :], (1, n_electrons, 1, 1)).reshape(-1, *data.atoms.shape[1:])
     copy_charges = jnp.tile(data.charges[:, None, :], (1, n_electrons, 1)).reshape(-1, data.charges.shape[-1])
-    #sign_psi_dpositron, log_psi_dpositron: [nwalkers*n_electrons]
+    #sign_psi_dpositron, log_psi_dpositron: [nwalker_per_device*n_electrons]
     sign_psi_dpositron, log_psi_dpositron = batch_network(params, pos_dpositron, copy_spins, copy_atoms, copy_charges)
     sign_psi_delectron, log_psi_delectron = batch_network(params, pos_delectron, copy_spins, copy_atoms, copy_charges)
     
-    sign_psi_dpositron = jnp.reshape(sign_psi_dpositron, (nwalkers, n_electrons))
-    log_psi_dpositron = jnp.reshape(log_psi_dpositron, (nwalkers, n_electrons))
-    sign_psi_delectron = jnp.reshape(sign_psi_delectron, (nwalkers, n_electrons))
-    log_psi_delectron = jnp.reshape(log_psi_delectron, (nwalkers, n_electrons))
+    sign_psi_dpositron = jnp.reshape(sign_psi_dpositron, (nwalker_per_device, n_electrons))
+    log_psi_dpositron = jnp.reshape(log_psi_dpositron, (nwalker_per_device, n_electrons))
+    sign_psi_delectron = jnp.reshape(sign_psi_delectron, (nwalker_per_device, n_electrons))
+    log_psi_delectron = jnp.reshape(log_psi_delectron, (nwalker_per_device, n_electrons))
 
     def loop_walker(i, val):
       sign = sign_psi_dpositron[i, :] * sign_psi_delectron[i, :]
@@ -647,7 +652,7 @@ def cal_apmd(
 
       return val + contribution
 
-    state += jax.lax.fori_loop(0, nwalkers, loop_walker, jnp.zeros((n_planewaves), dtype=jnp.float32)) / (n_particles * nwalkers)
+    state += constants.pmean(jax.lax.fori_loop(0, nwalker_per_device, loop_walker, jnp.zeros((n_planewaves),))) / (n_electrons * nwalker_per_device)
 
     return state
   return pwgrids, g_magnitudes, (init_state, apmd_estimator)
