@@ -615,44 +615,43 @@ def cal_apmd(
 
     batch_network = jax.vmap(signed_network, in_axes=(None, 0, 0, 0, 0), out_axes=(0, 0))
     sign_psi, log_psi = batch_network(params, data.positions, data.spins, data.atoms, data.charges)
-    
-    # double positrons
-    pos_dpositron = jnp.tile(pos[:, None, :, :], (1, n_electrons, 1, 1))
-    positron_coord = pos[:, -1, :]
-    pos_dpositron = pos_dpositron.at[:, jnp.arange(n_electrons), jnp.arange(n_electrons), :].set(positron_coord[:, None, :])
 
-    # double electrons
-    pos_delectron = jnp.tile(pos[:, None, :, :], (1, n_electrons, 1, 1))
-    pos_delectron = pos_delectron.at[:, jnp.arange(n_electrons), -1, :].set(pos[:, jnp.arange(n_electrons), :])
+    def loop_electron(j, val):
+      # For electron j, create modified positions for all walkers
+      # double positrons for electron j across all walkers
+      pos_dpositron_j = pos.copy()  # [nwalker_per_device, n_particles, 3]
+      positron_coords = pos[:, -1, :]  # [nwalker_per_device, 3]
+      pos_dpositron_j = pos_dpositron_j.at[:, j, :].set(positron_coords)
 
-    pos_dpositron = jnp.reshape(pos_dpositron, (-1, n_particles*3))
-    pos_delectron = jnp.reshape(pos_delectron, (-1, n_particles*3))
-    copy_spins = jnp.tile(data.spins[:, None, :], (1, n_electrons, 1)).reshape(-1, data.spins.shape[-1])
-    copy_atoms = jnp.tile(data.atoms[:, None, :, :], (1, n_electrons, 1, 1)).reshape(-1, *data.atoms.shape[1:])
-    copy_charges = jnp.tile(data.charges[:, None, :], (1, n_electrons, 1)).reshape(-1, data.charges.shape[-1])
-    #sign_psi_dpositron, log_psi_dpositron: [nwalker_per_device*n_electrons]
-    sign_psi_dpositron, log_psi_dpositron = batch_network(params, pos_dpositron, copy_spins, copy_atoms, copy_charges)
-    sign_psi_delectron, log_psi_delectron = batch_network(params, pos_delectron, copy_spins, copy_atoms, copy_charges)
-    
-    sign_psi_dpositron = jnp.reshape(sign_psi_dpositron, (nwalker_per_device, n_electrons))
-    log_psi_dpositron = jnp.reshape(log_psi_dpositron, (nwalker_per_device, n_electrons))
-    sign_psi_delectron = jnp.reshape(sign_psi_delectron, (nwalker_per_device, n_electrons))
-    log_psi_delectron = jnp.reshape(log_psi_delectron, (nwalker_per_device, n_electrons))
+      # double electrons for electron j across all walkers  
+      pos_delectron_j = pos.copy()  # [nwalker_per_device, n_particles, 3]
+      electron_j_coords = pos[:, j, :]  # [nwalker_per_device, 3]
+      pos_delectron_j = pos_delectron_j.at[:, -1, :].set(electron_j_coords)
 
-    def loop_walker(i, val):
-      sign = sign_psi_dpositron[i, :] * sign_psi_delectron[i, :]
-      factor = jnp.exp(log_psi_dpositron[i, :] + log_psi_delectron[i, :] - log_psi[i]*2) * sign
-      rdiff_i = rdiff[i, :, :]
-      # rdiff_i: [n_electrons, 3], pwgrids: [n_planewaves, 3]
-      # Compute dot product to get [n_planewaves, n_electrons] matrix
-      phase = jnp.dot(pwgrids, rdiff_i.T)  # [n_planewaves, n_electrons]
+      # Reshape for network input
+      pos_dpositron_flat = jnp.reshape(pos_dpositron_j, (nwalker_per_device, n_particles*3))
+      pos_delectron_flat = jnp.reshape(pos_delectron_j, (nwalker_per_device, n_particles*3))
       
-      # Use matrix multiplication: cos(phase) @ factor gives [n_planewaves] result
-      contribution = jnp.dot(jnp.cos(phase), factor)  # [n_planewaves]
+      # Compute wave functions for all walkers with electron j modified
+      sign_psi_dpositron_j, log_psi_dpositron_j = batch_network(params, pos_dpositron_flat, data.spins, data.atoms, data.charges)
+      sign_psi_delectron_j, log_psi_delectron_j = batch_network(params, pos_delectron_flat, data.spins, data.atoms, data.charges)
+      
+      # Calculate factors for all walkers
+      sign = sign_psi_dpositron_j * sign_psi_delectron_j
+      factor = jnp.exp(log_psi_dpositron_j + log_psi_delectron_j - log_psi*2) * sign
+      
+      rdiff_j = rdiff[:, j, :]  # [nwalker_per_device, 3]
+      # rdiff_j: [nwalker_per_device, 3], pwgrids: [n_planewaves, 3]
+      # Compute dot product to get [nwalker_per_device, n_planewaves] matrix
+      phase = jnp.dot(rdiff_j, pwgrids.T)  # [nwalker_per_device, n_planewaves]
+      
+      # Use matrix multiplication: cos(phase) * factor gives [nwalker_per_device, n_planewaves]
+      contribution_per_walker = jnp.cos(phase) * factor[:, None]  # [nwalker_per_device, n_planewaves]
+      contribution = jnp.sum(contribution_per_walker, axis=0)  # [n_planewaves]
 
       return val + contribution
 
-    state += constants.pmean(jax.lax.fori_loop(0, nwalker_per_device, loop_walker, jnp.zeros((n_planewaves),))) / (n_electrons * nwalker_per_device)
+    state += constants.pmean(jax.lax.fori_loop(0, n_electrons, loop_electron, jnp.zeros((n_planewaves),))) / (n_electrons * nwalker_per_device)
 
     return state
   return pwgrids, g_magnitudes, (init_state, apmd_estimator)
