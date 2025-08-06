@@ -1048,7 +1048,10 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   with writer_manager as writer:
     # Main training loop
     num_resets = 0  # used if reset_if_nan is true
+    training_start_time = time.time()
+    step_start_time = time.time()
     for t in range(t_init, cfg.optim.iterations):
+      iter_start_time = time.time()
       sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
       data, params, opt_state, loss, aux_data, pmove = step(
           data,
@@ -1135,9 +1138,17 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
       # Logging
       if t % cfg.log.stats_frequency == 0:
+        current_time = time.time()
+        iter_time = current_time - iter_start_time
+        total_time = current_time - training_start_time
+        avg_time_per_step = total_time / (t - t_init + 1) if t > t_init else iter_time
+        remaining_time = avg_time_per_step * (cfg.optim.iterations - t - 1)
+        
         logging_str = ('Step %05d: '
-                       '%03.4f E_h, exp. variance=%03.4f E_h^2, pmove=%0.2f')
-        logging_args = t, loss, weighted_stats.variance, np.mean(pmove)
+                       '%03.4f E_h, exp. variance=%03.4f E_h^2, pmove=%0.2f, '
+                       'time: %0.2fs/step, total: %0.1fmin, eta: %0.1fmin')
+        logging_args = (t, loss, weighted_stats.variance, np.mean(pmove),
+                       avg_time_per_step, total_time/60, remaining_time/60)
         writer_kwargs = {
             'step': t,
             'energy': np.asarray(loss),
@@ -1180,6 +1191,13 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       if time.time() - time_of_last_ckpt > cfg.log.save_frequency * 60 or t % cfg.log.save_freq == 0:
         checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width)
         time_of_last_ckpt = time.time()
+
+    # Training completed - log timing summary
+    total_training_time = time.time() - training_start_time
+    total_steps = cfg.optim.iterations - t_init
+    avg_time_per_step = total_training_time / total_steps if total_steps > 0 else 0
+    logging.info('Training completed in %0.2f minutes (%0.2f seconds per step)',
+                 total_training_time / 60, avg_time_per_step)
 
     # Shut down logging at end
     if cfg.system.states:
