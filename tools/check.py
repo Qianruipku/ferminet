@@ -33,6 +33,7 @@ def compare_arrays(arr, name: str):
             print(f"{name}[{i}]: {arr[i]}")
 
 def compare_params(params):
+    """Compares parameters in different devices."""
     # envelope
     for envelope in params['envelope']:
         pi_array = envelope['pi']
