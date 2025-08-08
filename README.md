@@ -56,6 +56,12 @@ calculation.
 ferminet --config ferminet/configs/atom.py --config.system.atom Li --config.batch_size 256 --config.pretrain.iterations 100
 ```
 
+or
+
+```shell
+python3 ferminet/main.py --config ferminet/configs/atom.py --config.system.atom Li --config.batch_size 256 --config.pretrain.iterations 100
+```
+
 will train FermiNet to find the ground-state wavefunction of the Li atom using a
 batch size of 1024 MCMC configurations ("walkers" in variational Monte Carlo
 language), and 100 iterations of pretraining (the default of 1000 is overkill
@@ -199,43 +205,9 @@ directory, which contains the checkpoints generated during training. When
 computing observables of excited states or the density matrix for the ground
 state, `.npy` files are also saved to the same folder. A single NumPy array is
 saved for every iteration of optimization into the same file. An example Colab
-notebook analyzing these outputs is given in `notebooks/excited_states_analysis.ipynb`.
+notebook analyzing these outputs is given in
+`notebooks/excited_states_analysis.ipynb`.
 <a target="_blank" href="https://colab.research.google.com/github/google-deepmind/ferminet/blob/main/ferminet/notebooks/excited_states_analysis.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="(Open in Colab!)"/></a>
-
-## Pretrained Models
-
-A collection of pretrained models trained with KFAC can be found on Google Cloud
-[here](https://console.cloud.google.com/storage/browser/dm-ferminet/models).
-These are all systems from the original PRResearch paper: carbon and neon atoms,
-and nitrogen, ethene, methylamine, ethanol and bicyclobutane molecules. Each
-folder contains samples from the wavefunction in `walkers.npy`, parameters in
-`parameters.npz` and geometries for the molecule in `geometry.npz`. To load the
-models and evaluate the local energy, run:
-
-```python
-import numpy as np
-import jax
-from functools import partial
-from ferminet import networks, train
-
-with open('params.npz', 'rb') as f:
-  params = dict(np.load(f, allow_pickle=True))
-  params = params['arr_0'].tolist()
-
-with open('walkers.npy', 'rb') as f:
-  data = np.load(f)
-
-with open('geometry.npz', 'rb') as f:
-  geometry = dict(np.load(f, allow_pickle=True))
-
-signed_network = partial(networks.fermi_net, envelope_type='isotropic', full_det=False, **geometry)
-# networks.fermi_net gives the sign/log of the wavefunction. We only care about the latter.
-network = lambda p, x: signed_network(p, x)[1]
-batch_network = jax.vmap(network, (None, 0), 0)
-loss = train.make_loss(network, batch_network, geometry['atoms'], geometry['charges'], clip_local_energy=5.0)
-
-print(loss(params, data)[0])  # For neon, should give -128.94165
-```
 
 ## Giving Credit
 
@@ -314,11 +286,15 @@ Natural excited states was introduced in this article, which is also the first
 paper from our group using pseudopotentials
 
 ```
-@article{pfau2023natural,
-  title={Natural Quantum Monte Carlo Computation of Excited States},
+@article{pfau2024excited,
+  title={Accurate computation of quantum excited states with neural networks},
   author={Pfau, David and Axelrod, Simon and Sutterud, Halvard and von Glehn, Ingrid and Spencer, James S},
-  journal={arXiv preprint arXiv:2308.16848},
-  year={2023}
+  journal={Science},
+  volume={385},
+  number={6711},
+  pages={eadn0137},
+  year={2024},
+  url={https://doi.org/10.1126/science.adn0137},
 }
 ```
 
