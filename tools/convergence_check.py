@@ -201,7 +201,7 @@ def plot_convergence(steps: List[int], stats: Dict[str, Dict], output_dir: str):
 
 def main():
     parser = argparse.ArgumentParser(description='Check FermiNet parameter convergence')
-    parser.add_argument('--train_dir', type=str, default='~/1_Work/1_Li_p/test_2/train',
+    parser.add_argument('--train_dir', type=str, default='./',
                         help='Directory containing checkpoint files')
     parser.add_argument('--output_dir', type=str, default='./convergence_analysis',
                         help='Output directory for results')

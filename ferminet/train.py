@@ -1137,19 +1137,17 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
           t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves)
 
       if cfg.debug.check_nan:
-        tree = {'params': params, 'loss': loss}
+        tree = {'params': params}
         if cfg.optim.optimizer != 'none':
           tree['optim'] = opt_state
-        try:
-          chex.assert_tree_all_finite(tree)
-          num_resets = 0  # Reset counter if check passes
-        except AssertionError as e:
-          if cfg.optim.reset_if_nan:  # Allow a certain number of NaNs
-            num_resets += 1
-            if num_resets > 100:
-              raise e
-          else:
-            raise e
+        chex.assert_tree_all_finite(tree)
+      if cfg.optim.reset_if_nan:
+        if jnp.isnan(loss):
+          num_resets += 1
+          if num_resets > 100:
+            raise ValueError('Loss is NaN. Too many resets, stopping training.')
+        else:
+          num_resets = 0
 
       # Logging
       if t % cfg.log.stats_frequency == 0:
