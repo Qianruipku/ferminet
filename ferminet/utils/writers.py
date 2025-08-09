@@ -28,7 +28,9 @@ class Writer(contextlib.AbstractContextManager):
                schema: Sequence[str],
                directory: str = 'logs/',
                iteration_key: Optional[str] = 't',
-               log: bool = True):
+               log: bool = True,
+               append: bool = False,
+               flush_frequency: Optional[int] = None):
     """Initialise Writer.
 
     Args:
@@ -38,6 +40,9 @@ class Writer(contextlib.AbstractContextManager):
       iteration_key: if not None or a null string, also include the iteration
         index as the first column in the CSV output with the given key.
       log: Also log each entry to stdout.
+      append: if True, append to existing file instead of overwriting.
+      flush_frequency: if not None, flush to disk every N writes. If None, 
+        never flush automatically.
     """
     self._schema = schema
     if not os.path.isdir(directory):
@@ -45,13 +50,17 @@ class Writer(contextlib.AbstractContextManager):
     self._filename = os.path.join(directory, name + '.csv')
     self._iteration_key = iteration_key
     self._log = log
+    self._append = append
+    self._flush_frequency = flush_frequency
 
   def __enter__(self):
-    self._file = open(self._filename, 'w', encoding='UTF-8')
-    # write top row of csv
-    if self._iteration_key:
-      self._file.write(f'{self._iteration_key},')
-    self._file.write(','.join(self._schema) + '\n')
+    mode = 'a' if self._append else 'w'
+    self._file = open(self._filename, mode, encoding='UTF-8')
+    # write top row of csv only if not appending or file is empty
+    if not self._append or (self._append and os.path.getsize(self._filename) == 0):
+      if self._iteration_key:
+        self._file.write(f'{self._iteration_key},')
+      self._file.write(','.join(self._schema) + '\n')
     return self
 
   def write(self, t: int, **data):
@@ -71,6 +80,9 @@ class Writer(contextlib.AbstractContextManager):
     # write the data to csv
     self._file.write(','.join(row) + '\n')
 
+    if self._flush_frequency is not None and t % self._flush_frequency == 0:
+      self._file.flush()
+    
     # write the data to abseil logs
     if self._log:
       logging.info('Iteration %s: %s', t, data)
