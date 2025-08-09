@@ -601,7 +601,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
      params,
      opt_state_ckpt,
      mcmc_width_ckpt,
-     density_state_ckpt) = checkpoint.restore(
+     density_state_ckpt,
+     sharded_key_ckpt,
+     weighted_stats_ckpt) = checkpoint.restore(
          ckpt_restore_filename, host_batch_size)
   else:
     logging.info('No checkpoint found. Training new model.')
@@ -632,6 +634,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     opt_state_ckpt = None
     mcmc_width_ckpt = None
     density_state_ckpt = None
+    sharded_key_ckpt = None
+    weighted_stats_ckpt = None
 
   # Set up logging and observables
   train_schema = ['step', 'energy', 'ewmean', 'ewvar', 'pmove']
@@ -940,7 +944,13 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     logging.info('Initial energy: %03.4f E_h', initial_energy[0])
 
   time_of_last_ckpt = time.time()
+
+  # Restore sharded_key and weighted_stats (if they exist)
+  if sharded_key_ckpt is not None:
+    sharded_key = sharded_key_ckpt
   weighted_stats = None
+  if weighted_stats_ckpt is not None:
+    weighted_stats = weighted_stats_ckpt
 
   if cfg.optim.optimizer == 'none' and opt_state_ckpt is not None:
     # If opt_state_ckpt is None, then we're restarting from a previous inference
@@ -971,12 +981,17 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         params['state_scale'] = -state_scale
 
   if writer_manager is None:
+    # Check if we're resuming from a checkpoint and train_stats.csv exists
+    train_stats_file = os.path.join(ckpt_save_path, 'train_stats.csv')
+    append_mode = t_init > 0 and os.path.exists(train_stats_file)
     writer_manager = writers.Writer(
         name='train_stats',
         schema=train_schema,
         directory=ckpt_save_path,
         iteration_key=None,
-        log=False)
+        log=False,
+        append=append_mode,
+        flush_frequency=cfg.log.save_freq)
   with writer_manager as writer:
     # Main training loop
     num_resets = 0  # used if reset_if_nan is true
@@ -1083,7 +1098,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
       # Checkpointing
       if time.time() - time_of_last_ckpt > cfg.log.save_frequency * 60 or t % cfg.log.save_freq == 0:
-        checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width)
+        checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, 
+                       density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats)
         time_of_last_ckpt = time.time()
 
     # Training completed - log timing summary

@@ -23,6 +23,7 @@ import zipfile
 from absl import logging
 from ferminet import networks
 from ferminet import observables
+from ferminet.utils import statistics
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -95,7 +96,9 @@ def save(save_path: str,
          params,
          opt_state,
          mcmc_width,
-         density_state: Optional[observables.DensityState] = None) -> str:
+         density_state: Optional[observables.DensityState] = None,
+         sharded_key: Optional[jax.random.PRNGKey] = None,
+         weighted_stats: Optional[statistics.WeightedStats] = None) -> str:
   """Saves checkpoint information to a npz file.
 
   Args:
@@ -108,6 +111,8 @@ def save(save_path: str,
     opt_state: optimization state.
     mcmc_width: width to use in the MCMC proposal distribution.
     density_state: optional state of the density matrix calculation
+    sharded_key: optional sharded random key state
+    weighted_stats: optional exponentially weighted statistics
 
   Returns:
     path to checkpoint file.
@@ -123,7 +128,9 @@ def save(save_path: str,
         opt_state=np.asarray(opt_state, dtype=object),
         mcmc_width=mcmc_width,
         density_state=(dataclasses.asdict(density_state)
-                       if density_state else None))
+                       if density_state else None),
+        sharded_key=sharded_key,
+        weighted_stats=weighted_stats)
   return ckpt_filename
 
 
@@ -137,13 +144,15 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
       calculation.
 
   Returns:
-    (t, data, params, opt_state, mcmc_width) tuple, where
+    (t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats) tuple, where
     t: number of completed iterations.
     data: MCMC walker configurations.
     params: pytree of network parameters.
     opt_state: optimization state.
     mcmc_width: width to use in the MCMC proposal distribution.
     density_state: optional state of the density matrix calculation
+    sharded_key: optional sharded random key state
+    weighted_stats: optional exponentially weighted statistics
 
   Raises:
     ValueError: if the leading dimension of data does not match the number of
@@ -166,6 +175,14 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
           **ckpt_data['density_state'].item())
     else:
       density_state = None
+
+    sharded_key = ckpt_data.get('sharded_key', None)
+    weighted_stats_data = ckpt_data.get('weighted_stats', None)
+    if weighted_stats_data is not None:
+      weighted_stats = weighted_stats_data.item()
+    else:
+      weighted_stats = None
+
     if data.positions.shape[0] != jax.device_count():
       raise ValueError(
           'Incorrect number of devices found. Expected'
@@ -195,4 +212,4 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
       data.positions = data.positions.astype(default_dtype)
       params = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), params)
       opt_state = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), opt_state)
-  return t, data, params, opt_state, mcmc_width, density_state
+  return t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats
