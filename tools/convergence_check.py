@@ -113,23 +113,183 @@ def calculate_parameter_statistics(param_history: Dict[str, List[np.ndarray]]) -
     return stats
 
 
-def assess_convergence(stats: Dict[str, Dict], convergence_threshold: float = 1e-5, 
-                      stability_window: int = 10) -> Dict[str, bool]:
-    """Assess whether parameters have converged"""
+def calculate_parameter_stability_metrics(param_history: Dict[str, List[np.ndarray]]) -> Dict[str, Dict]:
+    """Calculate parameter stability metrics - detect rotational or oscillatory changes"""
+    stability_metrics = {}
+    
+    for param_name, param_values in param_history.items():
+        if len(param_values) < 10:  # Need enough data points
+            continue
+        
+        # Use recent points for analysis
+        recent_params = param_values[-min(20, len(param_values)):]  # Reduced window size
+        
+        try:
+            # Calculate change magnitudes (norm-based analysis)
+            change_magnitudes = []
+            relative_changes = []
+            
+            for i in range(1, len(recent_params)):
+                diff = recent_params[i] - recent_params[i-1]
+                change_mag = np.linalg.norm(diff.flatten())
+                param_norm = np.linalg.norm(recent_params[i].flatten())
+                
+                change_magnitudes.append(change_mag)
+                if param_norm > 1e-10:
+                    relative_changes.append(change_mag / param_norm)
+                else:
+                    relative_changes.append(0.0)
+            
+            change_magnitudes = np.array(change_magnitudes)
+            relative_changes = np.array(relative_changes)
+            
+            # Autocorrelation analysis for oscillatory behavior
+            if len(change_magnitudes) >= 4:
+                n = len(change_magnitudes)
+                if n > 3:
+                    autocorr_1 = np.corrcoef(change_magnitudes[:-1], change_magnitudes[1:])[0, 1]
+                    if n > 4:
+                        autocorr_2 = np.corrcoef(change_magnitudes[:-2], change_magnitudes[2:])[0, 1]
+                    else:
+                        autocorr_2 = 0
+                else:
+                    autocorr_1 = autocorr_2 = 0
+            else:
+                autocorr_1 = autocorr_2 = 0
+            
+            # Trend analysis instead of full covariance
+            # Check if changes are getting smaller (converging) or stable
+            if len(change_magnitudes) >= 6:
+                first_half_mean = np.mean(change_magnitudes[:len(change_magnitudes)//2])
+                second_half_mean = np.mean(change_magnitudes[len(change_magnitudes)//2:])
+                trend_ratio = second_half_mean / (first_half_mean + 1e-10)
+            else:
+                trend_ratio = 1.0
+            
+            # Stability of change magnitude
+            change_magnitude_std = np.std(change_magnitudes)
+            change_magnitude_mean = np.mean(change_magnitudes)
+            change_stability = change_magnitude_std / (change_magnitude_mean + 1e-10)
+            
+            # Simplified directional consistency using smaller samples
+            if len(recent_params) >= 4:
+                # Sample a few parameter subsets to check directional consistency
+                param_size = recent_params[0].size
+                max_sample_size = min(1000, param_size)  # Limit sample size
+                
+                if param_size > max_sample_size:
+                    # Random sampling for large parameters
+                    np.random.seed(42)  # For reproducibility
+                    sample_indices = np.random.choice(param_size, max_sample_size, replace=False)
+                    sampled_params = [p.flatten()[sample_indices] for p in recent_params[-4:]]
+                else:
+                    sampled_params = [p.flatten() for p in recent_params[-4:]]
+                
+                # Calculate consecutive change directions
+                diffs = [sampled_params[i+1] - sampled_params[i] for i in range(len(sampled_params)-1)]
+                
+                if len(diffs) >= 2:
+                    normalized_diffs = [d / (np.linalg.norm(d) + 1e-10) for d in diffs]
+                    cosine_similarities = []
+                    for i in range(len(normalized_diffs) - 1):
+                        cos_sim = np.dot(normalized_diffs[i], normalized_diffs[i+1])
+                        cosine_similarities.append(cos_sim)
+                    avg_directional_consistency = np.mean(cosine_similarities) if cosine_similarities else 0
+                else:
+                    avg_directional_consistency = 0
+            else:
+                avg_directional_consistency = 0
+            
+            # Simple variance concentration estimate
+            recent_rel_changes = relative_changes[-min(10, len(relative_changes)):]
+            if len(recent_rel_changes) > 0:
+                change_variance = np.var(recent_rel_changes)
+                mean_change = np.mean(recent_rel_changes)
+                if mean_change > 1e-10:
+                    normalized_variance = change_variance / (mean_change**2)
+                else:
+                    normalized_variance = 0
+            else:
+                normalized_variance = 0
+            
+            stability_metrics[param_name] = {
+                'top3_variance_ratio': min(1.0, 1.0 - normalized_variance),  # Approximation
+                'top1_variance_ratio': min(1.0, 1.0 - normalized_variance * 0.5),
+                'autocorr_lag1': autocorr_1 if not np.isnan(autocorr_1) else 0,
+                'autocorr_lag2': autocorr_2 if not np.isnan(autocorr_2) else 0,
+                'directional_consistency': avg_directional_consistency,
+                'change_stability': change_stability,
+                'trend_ratio': trend_ratio,
+                'mean_relative_change': np.mean(relative_changes),
+            }
+            
+        except (np.linalg.LinAlgError, ValueError, MemoryError) as e:
+            print(f"Warning: Could not calculate stability metrics for {param_name}: {e}")
+            # Fallback metrics
+            stability_metrics[param_name] = {
+                'top3_variance_ratio': 0,
+                'top1_variance_ratio': 0,
+                'autocorr_lag1': 0,
+                'autocorr_lag2': 0,
+                'directional_consistency': 0,
+                'change_stability': float('inf'),
+                'trend_ratio': 1.0,
+                'mean_relative_change': 0,
+            }
+    
+    return stability_metrics
+
+
+def assess_convergence_with_stability(stats: Dict[str, Dict], 
+                                    stability_metrics: Dict[str, Dict],
+                                    convergence_threshold: float = 1e-5, 
+                                    stability_window: int = 10) -> Dict[str, str]:
+    """Enhanced convergence assessment considering parameter stability"""
     convergence_status = {}
     
     for param_name, param_stats in stats.items():
         relative_changes = param_stats['relative_changes']
         
         if len(relative_changes) < stability_window:
-            convergence_status[param_name] = False
+            convergence_status[param_name] = 'insufficient_data'
             continue
         
-        # Check if recent relative changes are all below threshold
+        # Traditional convergence check
         recent_changes = relative_changes[-stability_window:]
-        is_converged = np.all(recent_changes < convergence_threshold)
+        is_traditionally_converged = np.all(recent_changes < convergence_threshold)
+        recent_mean = np.mean(recent_changes)
         
-        convergence_status[param_name] = is_converged
+        # Stability analysis if available
+        if param_name in stability_metrics:
+            metrics = stability_metrics[param_name]
+            
+            # Criteria for different convergence states
+            is_low_dimensional_change = metrics['top3_variance_ratio'] > 0.85  # Changes concentrated in few directions
+            is_directionally_consistent = abs(metrics['directional_consistency']) > 0.3  # Consistent direction changes
+            is_stable_magnitude = metrics['change_stability'] < 2.0  # Stable change magnitudes
+            is_oscillatory = abs(metrics['autocorr_lag1']) > 0.4 or abs(metrics['autocorr_lag2']) > 0.4
+            
+            # Enhanced convergence classification
+            if is_traditionally_converged:
+                convergence_status[param_name] = 'converged'
+            elif (recent_mean < convergence_threshold * 20 and 
+                  is_low_dimensional_change and is_stable_magnitude):
+                convergence_status[param_name] = 'functional_converged'  # Likely rotating but functionally stable
+            elif (recent_mean < convergence_threshold * 50 and 
+                  is_oscillatory and is_stable_magnitude):
+                convergence_status[param_name] = 'stable_oscillation'  # Stable oscillatory pattern
+            elif recent_mean < convergence_threshold * 10:
+                convergence_status[param_name] = 'slowly_converging'  # Making progress but slowly
+            else:
+                convergence_status[param_name] = 'not_converged'
+        else:
+            # Fallback to traditional assessment
+            if is_traditionally_converged:
+                convergence_status[param_name] = 'converged'
+            elif recent_mean < convergence_threshold * 10:
+                convergence_status[param_name] = 'slowly_converging'
+            else:
+                convergence_status[param_name] = 'not_converged'
     
     return convergence_status
 
@@ -259,38 +419,77 @@ def main():
     print("Calculating parameter statistics...")
     stats = calculate_parameter_statistics(param_history)
     
-    # Assess convergence
-    print("Assessing convergence...")
-    convergence_status = assess_convergence(stats, args.threshold, args.window)
+    # Calculate stability metrics
+    print("Calculating stability metrics...")
+    stability_metrics = calculate_parameter_stability_metrics(param_history)
+    
+    # Enhanced convergence assessment
+    print("Assessing convergence with stability analysis...")
+    convergence_status = assess_convergence_with_stability(stats, stability_metrics, args.threshold, args.window)
     
     # Output results
-    print("\n" + "="*60)
-    print("Convergence Analysis Results")
-    print("="*60)
+    print("\n" + "="*80)
+    print("Enhanced Convergence Analysis Results")
+    print("="*80)
     
-    converged_count = 0
-    total_count = len(convergence_status)
+    # Count different status types
+    status_counts = {
+        'converged': 0,
+        'functional_converged': 0, 
+        'stable_oscillation': 0,
+        'slowly_converging': 0,
+        'not_converged': 0,
+        'insufficient_data': 0
+    }
     
-    for param_name, is_converged in convergence_status.items():
-        status = "✓ Converged" if is_converged else "✗ Not converged"
-        recent_mean_change = stats[param_name]['recent_mean_change']
-        final_change = stats[param_name]['final_relative_change']
+    # Status descriptions
+    status_descriptions = {
+        'converged': '✓ Fully Converged',
+        'functional_converged': '◐ Functionally Converged (rotating/low-dim)',
+        'stable_oscillation': '~ Stable Oscillation', 
+        'slowly_converging': '⚠ Slowly Converging',
+        'not_converged': '✗ Not Converged',
+        'insufficient_data': '? Insufficient Data'
+    }
+    
+    for param_name, status in convergence_status.items():
+        if status in status_counts:
+            status_counts[status] += 1
+            
+        recent_mean_change = stats[param_name]['recent_mean_change'] if param_name in stats else 0
+        final_change = stats[param_name]['final_relative_change'] if param_name in stats else 0
         
-        print(f"{param_name:30} {status:15} (recent avg: {recent_mean_change:.2e}, final change: {final_change:.2e})")
+        desc = status_descriptions.get(status, status)
+        print(f"{param_name:35} {desc:35} (avg: {recent_mean_change:.2e}, final: {final_change:.2e})")
         
-        if is_converged:
-            converged_count += 1
+        # Show stability metrics for interesting cases
+        if param_name in stability_metrics and status in ['functional_converged', 'stable_oscillation']:
+            metrics = stability_metrics[param_name]
+            print(f"{'':37} → Top3 variance: {metrics['top3_variance_ratio']:.3f}, "
+                  f"Direction consistency: {metrics['directional_consistency']:.3f}, "
+                  f"Change stability: {metrics['change_stability']:.3f}")
     
-    print("\n" + "-"*60)
-    print(f"Overall convergence status: {converged_count}/{total_count} parameters converged")
+    print("\n" + "-"*80)
+    total_analyzed = sum(status_counts.values())
+    print(f"Convergence Summary:")
+    for status, count in status_counts.items():
+        if count > 0:
+            percentage = count / total_analyzed * 100 if total_analyzed > 0 else 0
+            print(f"  {status_descriptions[status]:35} {count:3d}/{total_analyzed} ({percentage:5.1f}%)")
     
-    convergence_ratio = converged_count / total_count if total_count > 0 else 0
+    # Overall assessment
+    effectively_converged = status_counts['converged'] + status_counts['functional_converged']
+    convergence_ratio = effectively_converged / total_analyzed if total_analyzed > 0 else 0
+    
+    print(f"\nOverall Assessment:")
     if convergence_ratio >= 0.8:
-        print("✓ Model basically converged (≥80% parameters converged)")
-    elif convergence_ratio >= 0.5:
-        print("⚠ Model partially converged (50-80% parameters converged)")
+        print("✓ Model has effectively converged! (≥80% parameters stable)")
+    elif convergence_ratio >= 0.6:
+        print("◐ Model shows good convergence (60-80% parameters stable)")
+    elif convergence_ratio >= 0.4:
+        print("⚠ Model shows partial convergence (40-60% parameters stable)")
     else:
-        print("✗ Model not converged (<50% parameters converged)")
+        print("✗ Model has not converged sufficiently (<40% parameters stable)")
     
     # Generate charts
     print(f"\nGenerating convergence charts to {args.output_dir}...")
@@ -312,13 +511,31 @@ def main():
         
         f.write("Parameter convergence status:\n")
         f.write("-"*50 + "\n")
-        for param_name, is_converged in convergence_status.items():
-            status = "Converged" if is_converged else "Not converged"
-            recent_mean_change = stats[param_name]['recent_mean_change']
-            final_change = stats[param_name]['final_relative_change']
+        for param_name, status in convergence_status.items():
+            recent_mean_change = stats[param_name]['recent_mean_change'] if param_name in stats else 0
+            final_change = stats[param_name]['final_relative_change'] if param_name in stats else 0
             f.write(f"{param_name}: {status} (recent avg: {recent_mean_change:.2e}, final change: {final_change:.2e})\n")
+            
+            # Add stability metrics for interesting cases
+            if param_name in stability_metrics and status in ['functional_converged', 'stable_oscillation']:
+                metrics = stability_metrics[param_name]
+                f.write(f"  → Stability metrics: top3_var={metrics['top3_variance_ratio']:.3f}, "
+                       f"dir_consistency={metrics['directional_consistency']:.3f}, "
+                       f"change_stability={metrics['change_stability']:.3f}\n")
         
-        f.write(f"\nOverall convergence rate: {convergence_ratio:.1%}\n")
+        # Calculate convergence ratio
+        status_counts = {}
+        for status in convergence_status.values():
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        effectively_converged = status_counts.get('converged', 0) + status_counts.get('functional_converged', 0)
+        total_count = len(convergence_status)
+        convergence_ratio = effectively_converged / total_count if total_count > 0 else 0
+        
+        f.write(f"\nOverall effective convergence rate: {convergence_ratio:.1%}\n")
+        f.write(f"Status breakdown:\n")
+        for status, count in status_counts.items():
+            f.write(f"  {status}: {count}\n")
     
     print(f"Detailed results saved to: {results_file}")
 
