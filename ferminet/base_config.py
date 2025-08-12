@@ -362,6 +362,9 @@ def default() -> ml_collections.ConfigDict:
           # excitations.
           'excitation_type': 'ordered',
       },
+      'restart': {
+          'load_key': True,  # If True, load the sharded key from the checkpoint
+      }
   })
 
   return cfg
