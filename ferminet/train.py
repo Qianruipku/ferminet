@@ -946,11 +946,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   time_of_last_ckpt = time.time()
 
   # Restore sharded_key and weighted_stats (if they exist)
-  if sharded_key_ckpt is not None:
-    sharded_key = sharded_key_ckpt
   weighted_stats = None
-  if weighted_stats_ckpt is not None:
-    weighted_stats = weighted_stats_ckpt
+  if t_init > 0:
+    if sharded_key_ckpt is not None and cfg.restart.load_key:
+      sharded_key = sharded_key_ckpt
+    if weighted_stats_ckpt is not None and cfg.optim.optimizer != 'none':
+      weighted_stats = weighted_stats_ckpt
 
   if cfg.optim.optimizer == 'none' and opt_state_ckpt is not None:
     # If opt_state_ckpt is None, then we're restarting from a previous inference
