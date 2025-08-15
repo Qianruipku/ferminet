@@ -979,7 +979,10 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       loss = loss[0]
       # per batch variance isn't informative. Use weighted mean and variance
       # instead.
-      if not jnp.isnan(loss):
+      if cfg.optim.reset_if_nan and jnp.isnan(loss):
+        weighted_stats = statistics.exponentialy_weighted_stats(
+            alpha=0.0, observation=0.0, previous_stats=weighted_stats)
+      else:
         weighted_stats = statistics.exponentialy_weighted_stats(
             alpha=0.1, observation=loss, previous_stats=weighted_stats)
       pmove = pmove[0]
