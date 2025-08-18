@@ -331,6 +331,7 @@ def default() -> ml_collections.ConfigDict:
             'calculate': False,
             'save_freq': 10000,
             'rmax': 10.,
+            'r_search': 0,
             'nbins': 256,
             'elements': -1,
           },

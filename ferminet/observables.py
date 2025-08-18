@@ -29,6 +29,7 @@ import kfac_jax
 import functools
 import ml_collections
 import numpy as np
+from ferminet.utils.min_distance import min_image_distance_triclinic
 
 
 @chex.dataclass
@@ -494,6 +495,7 @@ def cal_pcf(
     nbins: int,
     elements: int,
     apply_pbc: bool,
+    r_search: int,
     lattice_vectors: jnp.ndarray,
 ) -> Tuple[jnp.ndarray, Observable]:
   """Evaluates the pair distribution function of each species.
@@ -503,6 +505,7 @@ def cal_pcf(
     nbins: How many bins to use
     target_species: Species to compute the pair distribution function for
     apply_pbc: Whether or not we are on periodic boundary conditions
+    r_search: Number of nearest neighbors to search for. Unused if apply_pbc is False
     lattice_vectors: Array of lattice vectors. Unused if apply_pbc is False
   Returns:
     callable with same arguments as the network and returns the contribution to
@@ -531,11 +534,9 @@ def cal_pcf(
       # Compute the distance vectors from the target species to all others
       rvec = jnp.concatenate([pos[:target_species, :], pos[target_species+1:, :]], axis=0) - pos[target_species, :]
       if apply_pbc:
-        inv_lattice_vectors = jnp.linalg.inv(lattice_vectors)
-        rvec = jnp.einsum('ij,kj->ki', inv_lattice_vectors, rvec)
-        rvec = jnp.mod(rvec + 0.5, 1) - 0.5
-        rvec = jnp.einsum('ij,kj->ki', lattice_vectors, rvec)
-      rabs = jnp.linalg.norm(rvec, axis=-1)
+        _, rabs = min_image_distance_triclinic(rvec, lattice_vectors, radius=r_search)
+      else:
+        rabs = jnp.linalg.norm(rvec, axis=-1)
       return rabs
     
     batch_pos_to_rabs = jax.vmap(pos_to_rabs, in_axes=0, out_axes=0)

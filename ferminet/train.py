@@ -726,6 +726,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         cfg.observables.pcf.nbins,
         cfg.observables.pcf.elements,
         cfg.system.pbc.apply_pbc,
+        cfg.observables.pcf.r_search,
         cfg.system.pbc.lattice_vectors
     )
   
