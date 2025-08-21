@@ -290,6 +290,8 @@ def update_mcmc_width(
     adapt_frequency: int,
     pmove: jnp.ndarray,
     pmoves: np.ndarray,
+    max_width: float = 20.0,
+    apply_pbc: bool = False,
     pmove_max: float = 0.55,
     pmove_min: float = 0.5,
 ) -> tuple[jnp.ndarray, np.ndarray]:
@@ -302,6 +304,9 @@ def update_mcmc_width(
     pmove: Acceptance ratio in the last step.
     pmoves: Acceptance ratio over the last N steps, where N is the number of
       steps between MCMC width updates.
+    max_width: Maximum allowed MCMC step width.
+    apply_pbc: Whether periodic boundary conditions are applied. If True,
+      the width will be constrained by max_width.
     pmove_max: The upper threshold for the range of allowed pmove values
     pmove_min: The lower threshold for the range of allowed pmove values
 
@@ -318,4 +323,6 @@ def update_mcmc_width(
       width *= 1.1
     elif np.mean(pmoves) < pmove_min:
       width /= 1.1
+  if apply_pbc:
+    width = jnp.minimum(width, max_width)
   return width, pmoves

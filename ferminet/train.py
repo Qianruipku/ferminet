@@ -998,6 +998,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     num_resets = 0  # used if reset_if_nan is true
     training_start_time = time.time()
     step_start_time = time.time()
+    #max_width is half of the lattice
+    lattice = cfg.system.pbc.lattice_vectors
+    if lattice is not None:
+      max_width = jnp.min(jnp.linalg.norm(lattice, axis=0)) / 2.0
+    else:
+      max_width = 20.0
     for t in range(t_init, cfg.optim.iterations):
       iter_start_time = time.time()
       sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
@@ -1029,7 +1035,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(
-          t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves)
+          t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves, max_width, cfg.system.pbc.apply_pbc)
 
       if cfg.debug.check_nan:
         tree = {'params': params}
