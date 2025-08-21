@@ -589,7 +589,8 @@ def cal_apmd(
 
   #Get the grid points - plane wave basis set
   # Use the initgrids function to get plane wave G vectors and their magnitudes
-  pwgrids, g_magnitudes = planewave.initgrids(lattice_vectors, ecut)
+  pwgrids, g_square = planewave.initgrids(lattice_vectors, ecut)
+  g_magnitudes = jnp.sqrt(g_square)
   
   # Update the actual number of plane waves found
   n_planewaves = pwgrids.shape[0]

@@ -4,15 +4,13 @@ import numpy as np
 
 def initgrids(
         lattice_vectors: jnp.ndarray,
-        ecut: float,
-        lat0: float = 1.0
+        ecut: float
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Initialize the grid for plane wave calculations.
 
     Args:
         lattice_vectors: Array of lattice vectors. Shape: (3, 3)
         ecut: Energy cutoff for the plane wave basis set in Hartree (Ha).
-        lat0: Unit length (default 1.0 in bohr)
 
     Returns:
         A tuple containing:
@@ -20,7 +18,7 @@ def initgrids(
         - g_magnitudes: Array of |G| magnitudes for each G vector. dims: (n_points,)
     """
     # Initialize lattice parameters
-    tpiba = 2.0 * jnp.pi / lat0
+    tpiba = 2.0 * jnp.pi
     tpiba2 = tpiba * tpiba
     
     # Convert energy cutoff to lattice units
@@ -70,14 +68,14 @@ def initgrids(
     if valid_indices.shape[0] > 0:
         grid_points = (valid_indices @ GT) * tpiba
         # Calculate |G| magnitudes for each G vector
-        g_magnitudes = jnp.sqrt(jnp.sum(grid_points**2, axis=1))
+        g_square = jnp.sum(grid_points**2, axis=1)
         
-        # Sort by g_magnitudes from small to large
-        sort_indices = jnp.argsort(g_magnitudes)
+        # Sort by g_square from small to large
+        sort_indices = jnp.argsort(g_square)
         grid_points = grid_points[sort_indices]
-        g_magnitudes = g_magnitudes[sort_indices]
+        g_square = g_square[sort_indices]
     else:
         grid_points = jnp.empty((0, 3))
-        g_magnitudes = jnp.empty((0,))
+        g_square = jnp.empty((0,))
     
-    return grid_points, g_magnitudes
+    return grid_points, g_square
