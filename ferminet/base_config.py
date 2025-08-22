@@ -169,6 +169,8 @@ def default() -> ml_collections.ConfigDict:
             # Minimum number of k-points in the envelope. Defaults to 
             # the number of particles
             'min_kpoints': None,
+            # Search radius for nearest neighbors
+            'r_search': 0,
           },
           # Units of *input* coords of atoms. Either 'bohr' or
           # 'angstrom'. Internally work in a.u.; positions in

@@ -25,6 +25,8 @@ from typing import Callable, Optional, Sequence, Tuple
 import chex
 from ferminet import hamiltonian
 from ferminet import networks
+from ferminet import pseudopotential as pp
+from ferminet.utils.min_distance import min_image_distance_triclinic
 import jax
 import jax.numpy as jnp
 
@@ -158,9 +160,12 @@ def local_energy(
     complex_output: bool = False,
     laplacian_method: str = 'default',
     states: int = 0,
+    pp_type: str = 'ccecp',
+    pp_symbols: Sequence[str] | None = None,
     lattice: Optional[jnp.ndarray] = None,
     heg: bool = True,
     convergence_radius: int = 5,
+    r_search: int = 0
 ) -> hamiltonian.LocalEnergy:
   """Creates the local energy function in periodic boundary conditions.
 
@@ -180,6 +185,7 @@ def local_energy(
       matrix.
     heg: bool. Flag to enable features specific to the electron gas.
     convergence_radius: int. Radius of cluster summed over by Ewald sums.
+    r_search: int. Search radius for finding nearest neighbors.
 
   Returns:
     Callable with signature e_l(params, key, data) which evaluates the local
@@ -189,6 +195,23 @@ def local_energy(
   if states:
     raise NotImplementedError('Excited states not implemented with PBC.')
   del nspins
+  if not pp_symbols:
+    effective_charges = charges
+    use_pp = False
+  else:
+    effective_charges, pp_local, pp_nonlocal = pp.make_pp_potential(
+        charges=charges,
+        symbols=pp_symbols,
+        quad_degree=4,
+        ecp=pp_type,
+        complex_output=complex_output
+    )
+    use_pp = not jnp.all(effective_charges == charges)
+
+  if not use_pp:
+    pp_local = lambda *args, **kwargs: 0.0
+    pp_nonlocal = lambda *args, **kwargs: 0.0
+
   if lattice is None:
     lattice = jnp.eye(3)
 
@@ -207,13 +230,17 @@ def local_energy(
       key: RNG state.
       data: MCMC configuration.
     """
-    del key  # unused
     potential_energy = make_ewald_potential(
-        lattice, data.atoms, charges, convergence_radius, heg
+        lattice, data.atoms, effective_charges, convergence_radius, heg
     )
     ae, ee, _, _ = networks.construct_input_features(
         data.positions, data.atoms)
     potential = potential_energy(ae, ee)
+    if use_pp:
+      batch_min_dis = jax.vmap(min_image_distance_triclinic, in_axes=(0, None, None))
+      ae_min, r_ae_min = batch_min_dis(ae, lattice, r_search)
+      r_ae_min = r_ae_min[..., None]
+      potential += + pp_local(r_ae_min) + pp_nonlocal(key, f, params, data, ae_min, r_ae_min)
     kinetic = ke(params, data)
     return potential + kinetic, None
 
