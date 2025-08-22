@@ -844,7 +844,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         pp_type=cfg.system.get('pp', {'type': 'ccecp'}).get('type'),
         pp_symbols=pp_symbols if cfg.system.get('use_pp') else None,
         lattice_vectors=cfg.system.pbc.lattice_vectors,
-        convergence_radius=cfg.system.pbc.convergence_radius)
+        convergence_radius=cfg.system.pbc.convergence_radius,
+        r_search=cfg.system.pbc.r_search)
 
   if cfg.optim.get('spin_energy', 0.0) > 0.0:
     # Minimize <H + c * S^2> instead of just <H>
