@@ -61,34 +61,29 @@ class Writer(contextlib.AbstractContextManager):
       if self._iteration_key:
         self._file.write(f'{self._iteration_key},')
       self._file.write(','.join(self._schema) + '\n')
+    self._buffer = []
     return self
 
   def write(self, t: int, **data):
-    """Writes to file and stdout.
-
-    Args:
-      t: iteration index.
-      **data: data items with keys as given in schema.
-    """
+    """Writes to buffer, only writes to file and log when flush condition is met."""
     row = [str(data.get(key, '')) for key in self._schema]
     if self._iteration_key:
       row.insert(0, str(t))
     for key in data:
       if key not in self._schema:
         raise ValueError(f'Not a recognized key for writer: {key}')
-
-    # write the data to csv
-    self._file.write(','.join(row) + '\n')
+    row_str = ','.join(row) + '\n'
+    self._buffer.append(row_str)
 
     if self._flush_frequency is not None and t % self._flush_frequency == 0:
+      self._file.writelines(self._buffer)
       self._file.flush()
-    
-    # write the data to abseil logs
-    if self._log:
-      logging.info('Iteration %s: %s', t, data)
+      self._buffer.clear()
+      if self._log:
+        logging.info('Iteration %s: %s', t, data)
 
   def flush(self):
     self._file.flush()
 
   def __exit__(self, exc_type, exc_val, exc_tb):
-    self._file.close()
+      self._file.close()
