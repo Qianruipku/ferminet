@@ -178,6 +178,7 @@ def default() -> ml_collections.ConfigDict:
             'min_kpoints': None,
             # Search radius for nearest neighbors
             'r_search': 0,
+            'put_in_box': False,
           },
           # Units of *input* coords of atoms. Either 'bohr' or
           # 'angstrom'. Internally work in a.u.; positions in

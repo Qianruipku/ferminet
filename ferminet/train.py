@@ -1079,6 +1079,10 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
           subkeys,
           mcmc_width)
 
+      if cfg.system.pbc.put_in_box:
+        # Ensure electrons remain in the box
+        data = data.replace(positions=pbc_feature_layer.put_in_box(
+            data.positions, cfg.system.pbc.lattice_vectors))
       # due to pmean, loss, and pmove should be the same across
       # devices.
       loss = loss[0]
