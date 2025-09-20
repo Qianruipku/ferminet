@@ -42,6 +42,22 @@ def periodic_norm(metric: jnp.ndarray, scaled_r: jnp.ndarray) -> jnp.ndarray:
   sin_term = jnp.einsum('...m,mn,...n->...', b, metric, b)
   return (1 / (2 * jnp.pi)) * jnp.sqrt(cos_term + sin_term)
 
+def put_in_box(r: jnp.ndarray, lattice: jnp.ndarray) -> jnp.ndarray:
+  """Maps a set of vectors into the periodic box defined by the lattice.
+  Args:
+    r: vectors in Cartesian coordinates, with trailing dimension ndim, to map
+      into the periodic box.
+    lattice: Matrix whose columns are the primitive lattice vectors of the
+      system, shape (ndim, ndim).
+  """
+  rshape = r.shape
+  r = r.reshape(rshape[:-1] + (-1, 3))
+  lattice_inv = jnp.linalg.inv(lattice).T
+  scaled_r = r @ lattice_inv
+  r_pbc = (scaled_r % 1) @ lattice.T
+  r_pbc = r_pbc.reshape(rshape)
+  return r_pbc
+
 
 def make_pbc_feature_layer(
     natoms: Optional[int] = None,
