@@ -342,6 +342,7 @@ def default() -> ml_collections.ConfigDict:
       },
       'restart': {
           'load_key': True,  # If True, load the sharded key from the checkpoint
+          'load_opt_state': True,  # If True, load the optimizer state from the checkpoint
       }
   })
 
