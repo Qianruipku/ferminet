@@ -124,7 +124,7 @@ def default() -> ml_collections.ConfigDict:
       'log': {
           'stats_frequency': 1,  # iterations between logging of stats
           'save_freq': 100000,  # iterations between saving network params
-          'save_frequency': 720.0,  # minutes between saving network params
+          'save_tfreq': 720.0,  # minutes between saving network params
           # Path to save/restore network to/from. If falsy,
           # creates a timestamped directory in the working directory.
           'save_path': '',

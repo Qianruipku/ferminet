@@ -1108,10 +1108,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         np.save(rho_r_file, observable_data['rho_r'])
 
       # Checkpointing
-      if time.time() - time_of_last_ckpt > cfg.log.save_frequency * 60 or t % cfg.log.save_freq == 0:
+      save_according_time = time.time() - time_of_last_ckpt > cfg.log.save_tfreq * 60
+      if save_according_time or t % cfg.log.save_freq == 0:
         checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, 
                        density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats)
-        time_of_last_ckpt = time.time()
+        if save_according_time:
+          time_of_last_ckpt = time.time()
 
     # Training completed - log timing summary
     total_training_time = time.time() - training_start_time
