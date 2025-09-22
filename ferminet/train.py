@@ -1159,7 +1159,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
           num_resets = 0
 
       # Logging
-      if t % cfg.log.stats_frequency == 0:
+      if t % cfg.log.stats_frequency == 0 and jax.process_index() == 0:
         current_time = time.time()
         iter_time = current_time - iter_start_time
         total_time = current_time - training_start_time
@@ -1210,12 +1210,19 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         np.save(rho_r_file, observable_data['rho_r'])
 
       # Checkpointing
-      save_according_time = time.time() - time_of_last_ckpt > cfg.log.save_tfreq * 60
+      def first_node_time():
+        current_time = 0.0
+        if jax.process_index() == 0:
+          current_time = time.time()
+        current_time  = jax.experimental.multihost_utils.broadcast_one_to_all(
+          current_time)
+        return current_time
+      save_according_time = first_node_time() - time_of_last_ckpt > cfg.log.save_tfreq * 60
       if save_according_time or t % cfg.log.save_freq == 0:
         checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, 
                        density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats)
         if save_according_time:
-          time_of_last_ckpt = time.time()
+          time_of_last_ckpt = first_node_time()
 
     # Training completed - log timing summary
     total_training_time = time.time() - training_start_time

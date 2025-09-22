@@ -27,6 +27,7 @@ from ferminet.utils import statistics
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental import multihost_utils
 
 
 def find_last_checkpoint(ckpt_path: Optional[str] = None) -> Optional[str]:
@@ -117,20 +118,25 @@ def save(save_path: str,
   Returns:
     path to checkpoint file.
   """
+  process = jax.process_index()
+  if (jax.device_count() // jax.local_device_count()) > 1:
+    data = multihost_utils.process_allgather(data)
+    sharded_key = multihost_utils.process_allgather(sharded_key)
   ckpt_filename = os.path.join(save_path, f'qmcjax_ckpt_{t:06d}.npz')
-  logging.info('Saving checkpoint %s', ckpt_filename)
-  with open(ckpt_filename, 'wb') as f:
-    np.savez(
-        f,
-        t=t,
-        data=dataclasses.asdict(data),
-        params=params,
-        opt_state=np.asarray(opt_state, dtype=object),
-        mcmc_width=mcmc_width,
-        density_state=(dataclasses.asdict(density_state)
-                       if density_state else None),
-        sharded_key=sharded_key,
-        weighted_stats=weighted_stats)
+  if process == 0:
+    logging.info('Saving checkpoint %s', ckpt_filename)
+    with open(ckpt_filename, 'wb') as f:
+      np.savez(
+          f,
+          t=t,
+          data=dataclasses.asdict(data),
+          params=params,
+          opt_state=np.asarray(opt_state, dtype=object),
+          mcmc_width=mcmc_width,
+          density_state=(dataclasses.asdict(density_state)
+                         if density_state else None),
+          sharded_key=sharded_key,
+          weighted_stats=weighted_stats)
   return ckpt_filename
 
 
@@ -160,7 +166,8 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
     if the total batch size is not equal to the number of MCMC configurations in
     data.
   """
-  logging.info('Loading checkpoint %s', restore_filename)
+  process = jax.process_index()
+  logging.info('Loading checkpoint %s on process %i', restore_filename, process)
   with open(restore_filename, 'rb') as f:
     ckpt_data = np.load(f, allow_pickle=True)
     # Retrieve data from npz file. Non-array variables need to be converted back
@@ -183,11 +190,10 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
     else:
       weighted_stats = None
 
-    if data.positions.shape[0] != jax.device_count():
-      raise ValueError(
-          'Incorrect number of devices found. Expected'
-          f' {data.positions.shape[0]}, found {jax.device_count()}.'
-      )
+    if (jax.device_count() // jax.local_device_count()) > 1:
+      data = jax.tree_util.tree_map(lambda x: x[process], data)
+      sharded_key = jax.tree_util.tree_map(lambda x: x[process], sharded_key)
+    
     if (
         batch_size
         and data.positions.shape[0] * data.positions.shape[1] > batch_size
