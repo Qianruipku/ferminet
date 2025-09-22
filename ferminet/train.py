@@ -1122,24 +1122,27 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       if cfg.observables.apmd.calculate:
         observable_states['apmd'] = observable_data['apmd']
         freq = cfg.observables.apmd.save_freq
-        if (t+1) % freq == 0:
-          apmd_data = np.array([pw_g, observable_data['apmd'][0]/ (t + 1)])
-          name = 'apmd_' + str((t+1)//freq) + '.txt'
-          apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
-          np.savetxt(apmd_file, apmd_data.T, fmt='%.6f')
-          apmd_file.close()
-        if (t+1) == cfg.optim.iterations:
-          apmd_data = np.array([pw_g, observable_data['apmd'][0]/ (t + 1)])
-          name = 'apmd_final.txt'
-          apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
-          np.savetxt(apmd_file, apmd_data.T, fmt='%.6f')
-          apmd_file.close()
-          write_apmd_1d(crystal_direction = cfg.observables.apmd.crystal_direction,
-                        ecut=cfg.observables.apmd.ecut,
-                        dq=cfg.observables.apmd.dq,
-                        grid_points=g_grids,
-                        density=observable_data['apmd'][0]/ (t + 1),
-                        ckpt_save_path=ckpt_save_path)
+        if (t+1) % freq == 0 or (t+1) == cfg.optim.iterations:
+          g_grids_np = np.array(g_grids)
+          pw_g_np = np.array(pw_g)
+          apmd_result_np = np.array(observable_data['apmd'][0] / (t + 1))
+          apmd_data = np.column_stack((g_grids_np, pw_g_np, apmd_result_np))
+          if (t+1) % freq == 0:
+            name = 'apmd_' + str((t+1)//freq) + '.txt'
+            apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
+            np.savetxt(apmd_file, apmd_data, fmt='%.6f')
+            apmd_file.close()
+          if (t+1) == cfg.optim.iterations:
+            name = 'apmd_final.txt'
+            apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
+            np.savetxt(apmd_file, apmd_data, fmt='%.6f')
+            apmd_file.close()
+            write_apmd_1d(crystal_direction = cfg.observables.apmd.crystal_direction,
+                          ecut=cfg.observables.apmd.ecut,
+                          dq=cfg.observables.apmd.dq,
+                          grid_points=g_grids,
+                          density=observable_data['apmd'][0]/ (t + 1),
+                          ckpt_save_path=ckpt_save_path)
 
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(
