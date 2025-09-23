@@ -140,7 +140,7 @@ def save(save_path: str,
   return ckpt_filename
 
 
-def restore(restore_filename: str, batch_size: Optional[int] = None):
+def restore(restore_filename: str, batch_size: Optional[int] = None, load_data: bool = True):
   """Restores data saved in a checkpoint.
 
   Args:
@@ -148,11 +148,13 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
     batch_size: total batch size to be used. If present, check the data saved in
       the checkpoint is consistent with the batch size requested for the
       calculation.
+    load_data: if True, load MCMC walker data from checkpoint. If False,
+      return None for data and the caller should initialize new MCMC data.
 
   Returns:
     (t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats) tuple, where
     t: number of completed iterations.
-    data: MCMC walker configurations.
+    data: MCMC walker configurations, or None if load_data is False.
     params: pytree of network parameters.
     opt_state: optimization state.
     mcmc_width: width to use in the MCMC proposal distribution.
@@ -173,7 +175,13 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
     # Retrieve data from npz file. Non-array variables need to be converted back
     # to natives types using .tolist().
     t = ckpt_data['t'].tolist() + 1  # Return the iterations completed.
-    data = networks.FermiNetData(**ckpt_data['data'].item())
+    
+    # Load MCMC data conditionally
+    if load_data:
+      data = networks.FermiNetData(**ckpt_data['data'].item())
+    else:
+      data = None
+    
     params = ckpt_data['params'].tolist()
     opt_state = ckpt_data['opt_state'].tolist()
     mcmc_width = jnp.array(ckpt_data['mcmc_width'].tolist())
@@ -191,31 +199,34 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
       weighted_stats = None
 
     if (jax.device_count() // jax.local_device_count()) > 1:
-      data = jax.tree_util.tree_map(lambda x: x[process], data)
+      if data is not None:
+        data = jax.tree_util.tree_map(lambda x: x[process], data)
       sharded_key = jax.tree_util.tree_map(lambda x: x[process], sharded_key)
     
-    if (
-        batch_size
-        and data.positions.shape[0] * data.positions.shape[1] > batch_size
-    ):
-      logging.warning(
-          f'Batch size (={data.positions.shape[0] * data.positions.shape[1]}) in checkpoint does not match requested batch size (={batch_size}). '
-          'Truncating data to match requested batch size.')
-      batch_per_device = batch_size // data.positions.shape[0]
-      data.spins = data.spins[:,:batch_per_device,:]
-      data.atoms = data.atoms[:,:batch_per_device,:, :]
-      data.charges = data.charges[:,:batch_per_device,:]
-      data.positions = data.positions[:,:batch_per_device,:]
-    elif(batch_size
-        and data.positions.shape[0] * data.positions.shape[1] < batch_size):
-      raise ValueError(
-          f'Wrong batch size in loaded data. Expected {batch_size}, found '
-          f'{data.positions.shape[0] * data.positions.shape[1]}.')
+    # Only process batch size validation if data was loaded
+    if data is not None:
+      if (
+          batch_size
+          and data.positions.shape[0] * data.positions.shape[1] > batch_size
+      ):
+        logging.warning(
+            f'Batch size (={data.positions.shape[0] * data.positions.shape[1]}) in checkpoint does not match requested batch size (={batch_size}). '
+            'Truncating data to match requested batch size.')
+        batch_per_device = batch_size // data.positions.shape[0]
+        data.spins = data.spins[:,:batch_per_device,:]
+        data.atoms = data.atoms[:,:batch_per_device,:, :]
+        data.charges = data.charges[:,:batch_per_device,:]
+        data.positions = data.positions[:,:batch_per_device,:]
+      elif(batch_size
+          and data.positions.shape[0] * data.positions.shape[1] < batch_size):
+        raise ValueError(
+            f'Wrong batch size in loaded data. Expected {batch_size}, found '
+            f'{data.positions.shape[0] * data.positions.shape[1]}.')
 
-    # When restarting with float32, we need to convert to float64 
-    default_dtype = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
-    if(data.positions.dtype != default_dtype):
-      data.positions = data.positions.astype(default_dtype)
-      params = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), params)
-      opt_state = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), opt_state)
+      # When restarting with float32, we need to convert to float64 
+      default_dtype = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
+      if(data.positions.dtype != default_dtype):
+        data.positions = data.positions.astype(default_dtype)
+        params = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), params)
+        opt_state = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), opt_state)
   return t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats

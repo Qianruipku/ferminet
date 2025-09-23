@@ -27,6 +27,7 @@ from ferminet import constants
 from ferminet import curvature_tags_and_blocks
 from ferminet import envelopes
 from ferminet import hamiltonian
+from ferminet import init
 from ferminet import loss as qmc_loss_functions
 from ferminet import mcmc
 from ferminet import networks
@@ -45,107 +46,6 @@ import ml_collections
 import numpy as np
 import optax
 from typing_extensions import Protocol
-
-
-def _assign_spin_configuration(
-    nalpha: int, nbeta: int, batch_size: int = 1
-) -> jnp.ndarray:
-  """Returns the spin configuration for a fixed spin polarisation."""
-  spins = jnp.concatenate((jnp.ones(nalpha), -jnp.ones(nbeta)))
-  return jnp.tile(spins[None], reps=(batch_size, 1))
-
-
-def init_electrons(  # pylint: disable=dangerous-default-value
-    key,
-    molecule: Sequence[system.Atom],
-    electrons: Sequence[int],
-    batch_size: int,
-    init_width: float,
-    core_electrons: Mapping[str, int] = {},
-    max_iter: int = 10_000,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-  """Initializes electron positions around each atom.
-
-  Args:
-    key: JAX RNG state.
-    molecule: system.Atom objects making up the molecule.
-    electrons: tuple of number of alpha and beta electrons.
-    batch_size: total number of MCMC configurations to generate across all
-      devices.
-    init_width: width of (atom-centred) Gaussian used to generate initial
-      electron configurations.
-    core_electrons: mapping of element symbol to number of core electrons
-      included in the pseudopotential.
-    max_iter: maximum number of iterations to try to find a valid initial
-        electron configuration for each atom. If reached, all electrons are
-        initialised from a Gaussian distribution centred on the origin.
-
-  Returns:
-    array of (batch_size, (nalpha+nbeta)*ndim) of initial (random) electron
-    positions in the initial MCMC configurations and ndim is the dimensionality
-    of the space (i.e. typically 3), and array of (batch_size, (nalpha+nbeta))
-    of spin configurations, where 1 and -1 indicate alpha and beta electrons
-    respectively.
-  """
-  niter = 0
-  total_electrons = sum(atom.charge - core_electrons.get(atom.symbol, 0)
-                        for atom in molecule)
-  if total_electrons != sum(electrons):
-    if len(molecule) == 1:
-      atomic_spin_configs = [electrons]
-    else:
-      raise NotImplementedError('No initialization policy yet '
-                                'exists for charged molecules.')
-  else:
-    atomic_spin_configs = [
-        (atom.element.nalpha - core_electrons.get(atom.symbol, 0) // 2,
-         atom.element.nbeta - core_electrons.get(atom.symbol, 0) // 2)
-        for atom in molecule
-    ]
-    assert sum(sum(x) for x in atomic_spin_configs) == sum(electrons)
-    while (
-        tuple(sum(x) for x in zip(*atomic_spin_configs)) != electrons
-        and niter < max_iter
-    ):
-      key, subkey = jax.random.split(key)
-      i = jax.random.randint(subkey, shape=(), minval=0, maxval=len(atomic_spin_configs))
-      nalpha, nbeta = atomic_spin_configs[i]
-      atomic_spin_configs[i] = nbeta, nalpha
-      niter += 1
-
-  if tuple(sum(x) for x in zip(*atomic_spin_configs)) == electrons:
-    # Assign each electron to an atom initially.
-    electron_positions = []
-    for i in range(2):
-      for j in range(len(molecule)):
-        atom_position = jnp.asarray(molecule[j].coords)
-        electron_positions.append(
-            jnp.tile(atom_position, atomic_spin_configs[j][i]))
-    electron_positions = jnp.concatenate(electron_positions)
-  else:
-    logging.warning(
-        'Failed to find a valid initial electron configuration after %i'
-        ' iterations. Initializing all electrons from a Gaussian distribution'
-        ' centred on the origin. This might require increasing the number of'
-        ' iterations used for pretraining and MCMC burn-in. Consider'
-        ' implementing a custom initialisation.',
-        niter,
-    )
-    electron_positions = jnp.zeros(shape=(3*sum(electrons),))
-
-  # Create a batch of configurations with a Gaussian distribution about each
-  # atom.
-  key, subkey = jax.random.split(key)
-  electron_positions += (
-      jax.random.normal(subkey, shape=(batch_size, electron_positions.size))
-      * init_width
-  )
-
-  electron_spins = _assign_spin_configuration(
-      electrons[0], electrons[1], batch_size
-  )
-
-  return electron_positions, electron_spins
 
 
 # All optimizer states (KFAC and optax-based).
@@ -589,53 +489,30 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # checkpoints in the event of pre-emption.
 
   ckpt_save_path = checkpoint.create_save_path(cfg.log.save_path)
-  ckpt_restore_path = checkpoint.get_restore_path(cfg.log.restore_path)
 
-  ckpt_restore_filename = (
-      checkpoint.find_last_checkpoint(ckpt_save_path) or
-      checkpoint.find_last_checkpoint(ckpt_restore_path))
-
-  if ckpt_restore_filename:
-    (t_init,
-     data,
-     params,
-     opt_state_ckpt,
-     mcmc_width_ckpt,
-     density_state_ckpt,
-     sharded_key_ckpt,
-     weighted_stats_ckpt) = checkpoint.restore(
-         ckpt_restore_filename, host_batch_size)
-  else:
-    logging.info('No checkpoint found. Training new model.')
-    key, subkey = jax.random.split(key)
-    # make sure data on each host is initialized differently
-    subkey = jax.random.fold_in(subkey, jax.process_index())
-    # create electron state (position and spin)
-    pos, spins = init_electrons(
-        subkey,
-        cfg.system.molecule,
-        cfg.system.electrons,
-        batch_size=total_host_batch_size,
-        init_width=cfg.mcmc.init_width,
-        core_electrons=core_electrons,
-    )
-    # For excited states, each device has a batch of walkers, where each walker
-    # is nstates * nelectrons. The vmap over nstates is handled in the function
-    # created in make_total_ansatz
-    pos = jnp.reshape(pos, data_shape + (-1,))
-    pos = kfac_jax.utils.broadcast_all_local_devices(pos)
-    spins = jnp.reshape(spins, data_shape + (-1,))
-    spins = kfac_jax.utils.broadcast_all_local_devices(spins)
-    data = networks.FermiNetData(
-        positions=pos, spins=spins, atoms=batch_atoms, charges=batch_charges
-    )
-
-    t_init = 0
-    opt_state_ckpt = None
-    mcmc_width_ckpt = None
-    density_state_ckpt = None
-    sharded_key_ckpt = None
-    weighted_stats_ckpt = None
+  # Initialize training data and handle checkpoints
+  (t_init,
+   data,
+   key,
+   params_from_ckpt,
+   opt_state_ckpt,
+   mcmc_width_ckpt,
+   density_state_ckpt,
+   sharded_key_ckpt,
+   weighted_stats_ckpt) = init.initialize_training_data_and_checkpoints(
+       cfg=cfg,
+       key=key,
+       data_shape=data_shape,
+       batch_atoms=batch_atoms,
+       batch_charges=batch_charges,
+       total_host_batch_size=total_host_batch_size,
+       host_batch_size=host_batch_size,
+       core_electrons=core_electrons
+   )
+  
+  # If we restored from checkpoint, use those params, otherwise use network params
+  if params_from_ckpt is not None:
+    params = params_from_ckpt
 
   # Set up logging and observables
   train_schema = ['step', 'energy', 'ewmean', 'ewvar', 'pmove']
@@ -712,7 +589,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       and cfg.pretrain.method == 'hf'
       and cfg.pretrain.iterations > 0
   ):
-    pretrain_spins = spins[0, 0]
+    pretrain_spins = data.spins[0, 0]
     batch_orbitals = jax.vmap(
         network.orbitals, in_axes=(None, 0, 0, 0, 0), out_axes=0
     )
