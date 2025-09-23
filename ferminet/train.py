@@ -1107,22 +1107,23 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       if cfg.observables.pcf.calculate:
         observable_states['pcf'] = observable_data['pcf']
         freq = cfg.observables.pcf.save_freq
-        if (t+1) % freq == 0:
-          pcf_data = np.array([pcf_grids, observable_data['pcf']/ (t + 1)])
-          name = 'pcf_' + str((t+1)//freq) + '.txt'
-          pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
-          np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
-          pcf_file.close()
-        if (t+1) == cfg.optim.iterations:
-          pcf_data = np.array([pcf_grids, observable_data['pcf']/ (t + 1)])
-          name = 'pcf_final.txt'
-          pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
-          np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
-          pcf_file.close()
+        if jax.process_index() == 0:
+          if (t+1) % freq == 0:
+            pcf_data = np.array([pcf_grids, observable_data['pcf']/ (t + 1)])
+            name = 'pcf_' + str((t+1)//freq) + '.txt'
+            pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
+            np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
+            pcf_file.close()
+          if (t+1) == cfg.optim.iterations:
+            pcf_data = np.array([pcf_grids, observable_data['pcf']/ (t + 1)])
+            name = 'pcf_final.txt'
+            pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
+            np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
+            pcf_file.close()
       if cfg.observables.apmd.calculate:
         observable_states['apmd'] = observable_data['apmd']
         freq = cfg.observables.apmd.save_freq
-        if (t+1) % freq == 0 or (t+1) == cfg.optim.iterations:
+        if jax.process_index() == 0 and ((t+1) % freq == 0 or (t+1) == cfg.optim.iterations):
           g_grids_np = np.array(g_grids)
           pw_g_np = np.array(pw_g)
           apmd_result_np = np.array(observable_data['apmd'][0] / (t + 1))
@@ -1199,18 +1200,19 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         writer.write(t, **writer_kwargs)
 
       # Log data about observables too big to fit in a CSV
-      if cfg.system.states:
-        energy_matrix = aux_data.local_energy_mat
-        energy_matrix = np.nanmean(np.nanmean(energy_matrix, axis=0), axis=0)
-        np.save(energy_matrix_file, energy_matrix)
-        if cfg.observables.s2:
-          np.save(s2_matrix_file, observable_data['s2'])
-        if cfg.observables.dipole:
-          np.save(dipole_matrix_file, observable_data['dipole'])
-      if cfg.observables.density:
-        np.save(density_matrix_file, observable_data['density'])
-      if cfg.observables.rho_r.calculate:
-        np.save(rho_r_file, observable_data['rho_r'])
+      if jax.process_index() == 0:
+          if cfg.system.states:
+            energy_matrix = aux_data.local_energy_mat
+            energy_matrix = np.nanmean(np.nanmean(energy_matrix, axis=0), axis=0)
+            np.save(energy_matrix_file, energy_matrix)
+            if cfg.observables.s2:
+              np.save(s2_matrix_file, observable_data['s2'])
+            if cfg.observables.dipole:
+              np.save(dipole_matrix_file, observable_data['dipole'])
+          if cfg.observables.density:
+            np.save(density_matrix_file, observable_data['density'])
+          if cfg.observables.rho_r.calculate:
+            np.save(rho_r_file, observable_data['rho_r'])
 
       # Checkpointing
       def first_node_time():
