@@ -767,7 +767,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     )
     sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
     opt_state = optimizer.init(params, subkeys, data)
-    opt_state = opt_state_ckpt or opt_state  # avoid overwriting ckpted state
+    if opt_state_ckpt is not None and cfg.restart.load_opt_state:
+      opt_state = opt_state_ckpt
   else:
     raise ValueError(f'Not a recognized optimizer: {cfg.optim.optimizer}')
 
