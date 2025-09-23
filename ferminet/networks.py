@@ -1064,6 +1064,9 @@ def make_orbitals(
     charges: jnp.ndarray,
     options: BaseNetworkOptions,
     equivariant_layers: Tuple[InitLayersFn, ApplyLayersFn],
+    particle_masses: jnp.array,
+    particle_charges: jnp.array,
+    ndim: int,
 ) -> ...:
   """Returns init, apply pair for orbitals.
 
@@ -1078,7 +1081,8 @@ def make_orbitals(
   equivariant_layers_init, equivariant_layers_apply = equivariant_layers
 
   # Optional Jastrow factor.
-  jastrow_init, jastrow_apply = jastrows.get_jastrow(options.jastrow)
+  jastrow_init, jastrow_apply = jastrows.get_jastrow(
+      options.jastrow, nspins, particle_masses, particle_charges, ndim)
 
   def init(key: chex.PRNGKey) -> ParamTree:
     """Returns initial random parameters for creating orbitals.
@@ -1364,6 +1368,8 @@ def make_fermi_net(
     charges: jnp.ndarray,
     *,
     ndim: int = 3,
+    particle_masses: jnp.array = None, # being lazy here
+    particle_charges: jnp.array = None,
     determinants: int = 16,
     states: int = 0,
     envelope: Optional[envelopes.Envelope] = None,
@@ -1476,6 +1482,9 @@ def make_fermi_net(
       charges=charges,
       options=options,
       equivariant_layers=equivariant_layers,
+      particle_masses=particle_masses,
+      particle_charges=particle_charges,
+      ndim=ndim
   )
 
   def init(key: chex.PRNGKey) -> ParamTree:

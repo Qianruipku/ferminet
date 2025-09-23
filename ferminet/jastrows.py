@@ -34,34 +34,53 @@ def _jastrow_ee(
     params: ParamTree,
     nspins: tuple[int, int],
     jastrow_fun: Callable[[jnp.ndarray, float, jnp.ndarray], jnp.ndarray],
+    masses: jnp.ndarray,
+    charges: jnp.ndarray,
+    ndim: int,
 ) -> jnp.ndarray:
   """Jastrow factor for electron-electron cusps."""
+
+  masses = jnp.asarray(masses)
+  charges = jnp.asarray(charges)
+  
+  red_masses = (masses.reshape(1, -1) * masses.reshape(-1, 1)) / (masses.reshape(1, -1) + masses.reshape(-1, 1))
+  charge_prods = charges.reshape(1, -1) * charges.reshape(-1, 1)
+
+  diag_cusp = jnp.eye(len(nspins)) * red_masses * charge_prods / 2
+  offdiag_cusp = (1 - jnp.eye(len(nspins))) * red_masses * charge_prods
+  neg_cusp = diag_cusp + offdiag_cusp
+
+  splits = [sum(nspins[:i+1]) for i in range(len(nspins) - 1)]
+
   r_ees = [
-      jnp.split(r, nspins[0:1], axis=1)
-      for r in jnp.split(r_ee, nspins[0:1], axis=0)
+      jnp.split(r, splits, axis = 1)
+      for r in jnp.split(r_ee, splits, axis = 0)
   ]
-  r_ees_parallel = jnp.concatenate([
-      r_ees[0][0][jnp.triu_indices(nspins[0], k=1)],
-      r_ees[1][1][jnp.triu_indices(nspins[1], k=1)],
-  ])
 
-  if r_ees_parallel.shape[0] > 0:
-    jastrow_ee_par = jnp.sum(
-        jastrow_fun(r_ees_parallel, 0.25, params['ee_par'])
-    )
-  else:
-    jastrow_ee_par = jnp.asarray(0.0)
+  # This part needs to be refactored; it is a double for loop,
+  # but only on the number of species which is always a small number
+  jastrow_value = jnp.asarray(0.0)
+  for i in range(len(nspins)):
+    for j in range(i, len(nspins)):
+      if i == j:
+        pos = r_ees[i][j][jnp.triu_indices(nspins[i], k=1)].flatten()
+      else:
+        pos = r_ees[i][j].flatten()
+            
+      jastrow_value += jnp.sum(jastrow_fun(pos, neg_cusp[i, j], params['alpha'][i, j]))
 
-  if r_ees[0][1].shape[0] > 0:
-    jastrow_ee_anti = jnp.sum(jastrow_fun(r_ees[0][1], 0.5, params['ee_anti']))
-  else:
-    jastrow_ee_anti = jnp.asarray(0.0)
-
-  return jastrow_ee_anti + jastrow_ee_par
+  return jastrow_value
 
 
-def make_simple_ee_jastrow() -> ...:
+def make_simple_ee_jastrow(
+      nspins: jnp.ndarray,
+      masses: jnp.ndarray,
+      charges: jnp.ndarray,
+      ndim: int,
+  ) -> ...:
   """Creates a Jastrow factor for electron-electron cusps."""
+  if ndim != 3:
+    raise NotImplementedError("Jastrow only implemented for ndim = 3")
 
   def simple_ee_cusp_fun(
       r: jnp.ndarray, cusp: float, alpha: jnp.ndarray
@@ -71,11 +90,8 @@ def make_simple_ee_jastrow() -> ...:
 
   def init() -> Mapping[str, jnp.ndarray]:
     params = {}
-    params['ee_par'] = jnp.ones(
-        shape=1,
-    )
-    params['ee_anti'] = jnp.ones(
-        shape=1,
+    params['alpha'] = jnp.ones(
+        shape=(len(nspins), len(nspins)),
     )
     return params
 
@@ -85,15 +101,23 @@ def make_simple_ee_jastrow() -> ...:
       nspins: tuple[int, int],
   ) -> jnp.ndarray:
     """Jastrow factor for electron-electron cusps."""
-    return _jastrow_ee(r_ee, params, nspins, jastrow_fun=simple_ee_cusp_fun)
+    return _jastrow_ee(r_ee, params, nspins, 
+        jastrow_fun=simple_ee_cusp_fun, masses = masses, charges = charges, ndim = ndim)
 
   return init, apply
 
 
-def get_jastrow(jastrow: JastrowType) -> ...:
+def get_jastrow(
+      jastrow: JastrowType,
+      nspins: jnp.ndarray,
+      masses: jnp.ndarray,
+      charges: jnp.ndarray,
+      ndim: int,
+  ) -> ...:
   jastrow_init, jastrow_apply = None, None
   if jastrow == JastrowType.SIMPLE_EE:
-    jastrow_init, jastrow_apply = make_simple_ee_jastrow()
+    jastrow_init, jastrow_apply = make_simple_ee_jastrow(
+      nspins, masses, charges, ndim)
   elif jastrow != JastrowType.NONE:
     raise ValueError(f'Unknown Jastrow Factor type: {jastrow}')
 

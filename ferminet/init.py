@@ -29,7 +29,7 @@ def _assign_spin_configuration(
     particles: int, batch_size: int = 1
 ) -> jnp.ndarray:
   """Returns the spin configuration for a fixed spin polarisation."""
-  spin_values = [1. if i % 2 == 0 else -1. for i in range(len(particles))]
+  spin_values = [float(i) for i in range(len(particles))]
   spins = jnp.concatenate([jnp.full(count, value) for count, value in zip(particles, spin_values)])
   return jnp.tile(spins[None], reps=(batch_size, 1))
 

@@ -328,6 +328,8 @@ def make_fermi_net(
     charges: jnp.ndarray,
     *,
     ndim: int = 3,
+    particle_masses: jnp.array = None, # being lazy here
+    particle_charges: jnp.array = None,
     determinants: int = 16,
     states: int = 0,
     envelope: Optional[envelopes.Envelope] = None,
@@ -413,6 +415,9 @@ def make_fermi_net(
       charges=charges,
       options=options,
       equivariant_layers=psiformer_layers,
+      particle_masses=particle_masses,
+      particle_charges=particle_charges,
+      ndim=ndim
   )
 
   def network_init(key: chex.PRNGKey) -> networks.ParamTree:
