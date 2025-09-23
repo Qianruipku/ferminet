@@ -28,6 +28,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils
+import kfac_jax
 
 
 def find_last_checkpoint(ckpt_path: Optional[str] = None) -> Optional[str]:
@@ -125,14 +126,17 @@ def save(save_path: str,
   ckpt_filename = os.path.join(save_path, f'qmcjax_ckpt_{t:06d}.npz')
   if process == 0:
     logging.info('Saving checkpoint %s', ckpt_filename)
+    single_device_params = jax.tree.map(lambda x: x[0], params)
+    single_device_mcmc_width = jax.tree.map(lambda x: x[0], mcmc_width)
+
     with open(ckpt_filename, 'wb') as f:
       np.savez(
           f,
           t=t,
           data=dataclasses.asdict(data),
-          params=params,
+          params=single_device_params,
           opt_state=np.asarray(opt_state, dtype=object),
-          mcmc_width=mcmc_width,
+          mcmc_width=single_device_mcmc_width,
           density_state=(dataclasses.asdict(density_state)
                          if density_state else None),
           sharded_key=sharded_key,
@@ -140,7 +144,7 @@ def save(save_path: str,
   return ckpt_filename
 
 
-def restore(restore_filename: str, batch_size: Optional[int] = None, load_data: bool = True):
+def restore(restore_filename: str, batch_size: Optional[int] = None):
   """Restores data saved in a checkpoint.
 
   Args:
@@ -148,8 +152,6 @@ def restore(restore_filename: str, batch_size: Optional[int] = None, load_data: 
     batch_size: total batch size to be used. If present, check the data saved in
       the checkpoint is consistent with the batch size requested for the
       calculation.
-    load_data: if True, load MCMC walker data from checkpoint. If False,
-      return None for data and the caller should initialize new MCMC data.
 
   Returns:
     (t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats) tuple, where
@@ -177,14 +179,45 @@ def restore(restore_filename: str, batch_size: Optional[int] = None, load_data: 
     t = ckpt_data['t'].tolist() + 1  # Return the iterations completed.
     
     # Load MCMC data conditionally
-    if load_data:
-      data = networks.FermiNetData(**ckpt_data['data'].item())
-    else:
-      data = None
+    data = networks.FermiNetData(**ckpt_data['data'].item())
+    previous_devices = data.positions.shape[0]
+    current_devices = jax.local_device_count()
+
+    single_device_params = ckpt_data['params'].item()
+    params = kfac_jax.utils.replicate_all_local_devices(single_device_params)
     
-    params = ckpt_data['params'].tolist()
-    opt_state = ckpt_data['opt_state'].tolist()
-    mcmc_width = jnp.array(ckpt_data['mcmc_width'].tolist())
+    # Handle optimizer state adaptation for different device counts
+    previous_opt_state = ckpt_data['opt_state'].tolist()
+    
+    def adapt_kfac_opt_state(opt_state, current_devices):
+      """Adapt KFAC optimizer state to target number of devices."""
+      if previous_devices == current_devices:
+        return opt_state
+      
+      def adapt_array_first_dim(arr):
+        """Adapt array's first dimension to match current_devices."""
+        if hasattr(arr, 'shape') and len(arr.shape) > 0:
+          previous_devices_in_arr = arr.shape[0]
+          if previous_devices_in_arr == current_devices:
+            # Already correct size
+            return arr
+          else:
+            # All other cases: take first device data and adapt to current_devices
+            data = arr[0]  # Shape (...,) - extract data from first device
+            if current_devices == 1:
+              return jnp.expand_dims(data, axis=0)  # Shape (1, ...)
+            else:
+              return jnp.array([data] * current_devices)  # Shape (current_devices, ...)
+        return arr
+      
+      # Use JAX tree operations to recursively apply the transformation
+      adapted_state = jax.tree_util.tree_map(adapt_array_first_dim, opt_state)
+      return adapted_state
+    
+    opt_state = adapt_kfac_opt_state(previous_opt_state, current_devices)
+    
+    single_device_mcmc_width = ckpt_data['mcmc_width'].item()
+    mcmc_width = kfac_jax.utils.replicate_all_local_devices(single_device_mcmc_width)
     if ckpt_data['density_state']:
       density_state = observables.DensityState(
           **ckpt_data['density_state'].item())
@@ -203,30 +236,47 @@ def restore(restore_filename: str, batch_size: Optional[int] = None, load_data: 
         data = jax.tree_util.tree_map(lambda x: x[process], data)
       sharded_key = jax.tree_util.tree_map(lambda x: x[process], sharded_key)
     
-    # Only process batch size validation if data was loaded
-    if data is not None:
-      if (
-          batch_size
-          and data.positions.shape[0] * data.positions.shape[1] > batch_size
-      ):
-        logging.warning(
-            f'Batch size (={data.positions.shape[0] * data.positions.shape[1]}) in checkpoint does not match requested batch size (={batch_size}). '
-            'Truncating data to match requested batch size.')
-        batch_per_device = batch_size // data.positions.shape[0]
-        data.spins = data.spins[:,:batch_per_device,:]
-        data.atoms = data.atoms[:,:batch_per_device,:, :]
-        data.charges = data.charges[:,:batch_per_device,:]
-        data.positions = data.positions[:,:batch_per_device,:]
-      elif(batch_size
-          and data.positions.shape[0] * data.positions.shape[1] < batch_size):
-        raise ValueError(
-            f'Wrong batch size in loaded data. Expected {batch_size}, found '
-            f'{data.positions.shape[0] * data.positions.shape[1]}.')
+    if (
+        batch_size
+        and data.positions.shape[0] * data.positions.shape[1] > batch_size
+    ):
+      logging.warning(
+          f'Batch size (={data.positions.shape[0] * data.positions.shape[1]}) in checkpoint does not match requested batch size (={batch_size}). '
+          'Truncating data to match requested batch size.')
+      batch_per_device = batch_size // data.positions.shape[0]
+      data.spins = data.spins[:,:batch_per_device,:]
+      data.atoms = data.atoms[:,:batch_per_device,:, :]
+      data.charges = data.charges[:,:batch_per_device,:]
+      data.positions = data.positions[:,:batch_per_device,:]
+    elif(batch_size
+        and data.positions.shape[0] * data.positions.shape[1] < batch_size):
+      raise ValueError(
+          f'Wrong batch size in loaded data. Expected {batch_size}, found '
+          f'{data.positions.shape[0] * data.positions.shape[1]}.')
+    else:
+      # Redistribute data across devices if device count changed
+      if previous_devices != current_devices:
+        total_batch = data.positions.shape[0] * data.positions.shape[1]
+        batch_per_device = total_batch // current_devices
 
-      # When restarting with float32, we need to convert to float64 
-      default_dtype = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
-      if(data.positions.dtype != default_dtype):
-        data.positions = data.positions.astype(default_dtype)
-        params = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), params)
-        opt_state = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), opt_state)
+        def redistribute_array(arr):
+          # Flatten the first two dimensions, then reshape to target device count
+          original_shape = arr.shape
+          flattened = arr.reshape((total_batch,) + original_shape[2:])
+          new_shape = (current_devices, batch_per_device) + original_shape[2:]
+          return flattened.reshape(new_shape)
+
+        data = networks.FermiNetData(
+            positions=redistribute_array(data.positions),
+            spins=redistribute_array(data.spins),
+            atoms=redistribute_array(data.atoms),
+            charges=redistribute_array(data.charges)
+        )
+    
+    # When restarting with float32, we need to convert to float64 
+    default_dtype = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
+    if(data.positions.dtype != default_dtype):
+      data.positions = data.positions.astype(default_dtype)
+      params = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), params)
+      opt_state = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), opt_state)
   return t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats

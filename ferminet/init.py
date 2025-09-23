@@ -198,7 +198,7 @@ def initialize_training_data_and_checkpoints(
      density_state_ckpt,
      sharded_key_ckpt,
      weighted_stats_ckpt) = checkpoint.restore(
-         ckpt_restore_filename, host_batch_size, cfg.restart.load_data)
+         ckpt_restore_filename, host_batch_size)
     
     # If we didn't load MCMC data from checkpoint, initialize it fresh
     if not cfg.restart.load_data:
