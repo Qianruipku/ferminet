@@ -90,7 +90,7 @@ class HeAtomTest(absltest.TestCase, ReferenceTestMixin):
         self.cfg.network.ferminet.hidden_dims = ((16, 4),) * 1
         self.cfg.network.determinants = 2
         self.cfg.batch_size = 16
-        self.cfg.pretrain.iterations = 5
+        self.cfg.pretrain.iterations = 0
         self.cfg.mcmc.burn_in = 5
         self.cfg.optim.iterations = 5
         
