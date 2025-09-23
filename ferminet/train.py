@@ -28,6 +28,7 @@ from ferminet import curvature_tags_and_blocks
 from ferminet import envelopes
 from ferminet import hamiltonian
 from ferminet import fake_hamiltonian
+from ferminet import init
 from ferminet import loss as qmc_loss_functions
 from ferminet import mcmc
 from ferminet import networks
@@ -50,78 +51,6 @@ import ml_collections
 import numpy as np
 import optax
 from typing_extensions import Protocol
-
-
-def _assign_spin_configuration(
-    particles: int, batch_size: int = 1
-) -> jnp.ndarray:
-  """Returns the spin configuration for a fixed spin polarisation."""
-  spin_values = [1. if i % 2 == 0 else -1. for i in range(len(particles))]
-  spins = jnp.concatenate([jnp.full(count, value) for count, value in zip(particles, spin_values)])
-  return jnp.tile(spins[None], reps=(batch_size, 1))
-
-
-def init_electrons(  # pylint: disable=dangerous-default-value
-    key,
-    molecule: Sequence[system.Atom],
-    electrons: Sequence[int],
-    ndim: int,
-    batch_size: int,
-    init_width: float,
-    core_electrons: Mapping[str, int] = {},
-    max_iter: int = 10_000,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-  """Initializes electron positions around each atom.
-
-  Args:
-    key: JAX RNG state.
-    molecule: system.Atom objects making up the molecule.
-    electrons: tuple of number of alpha and beta electrons.
-    ndim: number of dimensions
-    batch_size: total number of MCMC configurations to generate across all
-      devices.
-    init_width: width of (atom-centred) Gaussian used to generate initial
-      electron configurations.
-    core_electrons: mapping of element symbol to number of core electrons
-      included in the pseudopotential.
-    max_iter: maximum number of iterations to try to find a valid initial
-        electron configuration for each atom. If reached, all electrons are
-        initialised from a Gaussian distribution centred on the origin.
-
-  Returns:
-    array of (batch_size, (nalpha+nbeta)*ndim) of initial (random) electron
-    positions in the initial MCMC configurations and ndim is the dimensionality
-    of the space (i.e. typically 3), and array of (batch_size, (nalpha+nbeta))
-    of spin configurations, where 1 and -1 indicate alpha and beta electrons
-    respectively.
-  """
-
-  atomic_charges = jnp.array([atom.charge for atom in molecule])
-  if len(atomic_charges) == 1:
-    electron_positions = jnp.tile(jnp.asarray(molecule[0].coords), sum(electrons))
-    electron_positions = jnp.tile(electron_positions, (batch_size, 1))
-  else:
-    if sum(atomic_charges) == 0:
-      raise ValueError("If there are no charged atoms, please add only one neutral atom")
-    
-    atomic_positions = jnp.array([atom.coords for atom in molecule])
-
-    key, subkey = jax.random.split(key)
-    inds = jax.random.choice(subkey, len(molecule), shape=(batch_size, sum(electrons)), p=atomic_charges)
-
-    electron_positions = atomic_positions[inds].reshape(batch_size, sum(electrons) * ndim)
-
-  key, subkey = jax.random.split(key)
-  electron_positions += (
-      jax.random.normal(subkey, shape=electron_positions.shape)
-      * init_width
-  )
-
-  electron_spins = _assign_spin_configuration(
-      electrons, batch_size
-  )
-
-  return electron_positions, electron_spins
 
 
 # All optimizer states (KFAC and optax-based).
@@ -605,54 +534,30 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # checkpoints in the event of pre-emption.
 
   ckpt_save_path = checkpoint.create_save_path(cfg.log.save_path)
-  ckpt_restore_path = checkpoint.get_restore_path(cfg.log.restore_path)
 
-  ckpt_restore_filename = (
-      checkpoint.find_last_checkpoint(ckpt_save_path) or
-      checkpoint.find_last_checkpoint(ckpt_restore_path))
-
-  if ckpt_restore_filename:
-    (t_init,
-     data,
-     params,
-     opt_state_ckpt,
-     mcmc_width_ckpt,
-     density_state_ckpt,
-     sharded_key_ckpt,
-     weighted_stats_ckpt) = checkpoint.restore(
-         ckpt_restore_filename, host_batch_size)
-  else:
-    logging.info('No checkpoint found. Training new model.')
-    key, subkey = jax.random.split(key)
-    # make sure data on each host is initialized differently
-    subkey = jax.random.fold_in(subkey, jax.process_index())
-    # create electron state (position and spin)
-    pos, spins = init_electrons(
-        subkey,
-        cfg.system.molecule,
-        cfg.system.particles,
-        cfg.system.ndim,
-        batch_size=total_host_batch_size,
-        init_width=cfg.mcmc.init_width,
-        core_electrons=core_electrons,
-    )
-    # For excited states, each device has a batch of walkers, where each walker
-    # is nstates * nelectrons. The vmap over nstates is handled in the function
-    # created in make_total_ansatz
-    pos = jnp.reshape(pos, data_shape + (-1,))
-    pos = kfac_jax.utils.broadcast_all_local_devices(pos)
-    spins = jnp.reshape(spins, data_shape + (-1,))
-    spins = kfac_jax.utils.broadcast_all_local_devices(spins)
-    data = networks.FermiNetData(
-        positions=pos, spins=spins, atoms=batch_atoms, charges=batch_charges
-    )
-
-    t_init = 0
-    opt_state_ckpt = None
-    mcmc_width_ckpt = None
-    density_state_ckpt = None
-    sharded_key_ckpt = None
-    weighted_stats_ckpt = None
+  # Initialize training data and handle checkpoints
+  (t_init,
+   data,
+   key,
+   params_from_ckpt,
+   opt_state_ckpt,
+   mcmc_width_ckpt,
+   density_state_ckpt,
+   sharded_key_ckpt,
+   weighted_stats_ckpt) = init.initialize_training_data_and_checkpoints(
+       cfg=cfg,
+       key=key,
+       data_shape=data_shape,
+       batch_atoms=batch_atoms,
+       batch_charges=batch_charges,
+       total_host_batch_size=total_host_batch_size,
+       host_batch_size=host_batch_size,
+       core_electrons=core_electrons
+   )
+  
+  # If we restored from checkpoint, use those params, otherwise use network params
+  if params_from_ckpt is not None:
+    params = params_from_ckpt
 
   # Set up logging and observables
   train_schema = ['step', 'energy', 'ewmean', 'ewvar', 'pmove']
@@ -752,7 +657,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       and cfg.pretrain.method == 'hf'
       and cfg.pretrain.iterations > 0
   ):
-    pretrain_spins = spins[0, 0]
+    pretrain_spins = data.spins[0, 0]
     batch_orbitals = jax.vmap(
         network.orbitals, in_axes=(None, 0, 0, 0, 0), out_axes=0
     )
