@@ -231,15 +231,12 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
     else:
       weighted_stats = None
 
-    if (jax.device_count() // jax.local_device_count()) > 1:
+    if len(data.positions.shape) > 3: # More than one host for data
       if data is not None:
         data = jax.tree_util.tree_map(lambda x: x[process], data)
       sharded_key = jax.tree_util.tree_map(lambda x: x[process], sharded_key)
-    
-    if (
-        batch_size
-        and data.positions.shape[0] * data.positions.shape[1] > batch_size
-    ):
+
+    if (data.positions.shape[0] * data.positions.shape[1] > batch_size):
       logging.warning(
           f'Batch size (={data.positions.shape[0] * data.positions.shape[1]}) in checkpoint does not match requested batch size (={batch_size}). '
           'Truncating data to match requested batch size.')
@@ -248,12 +245,7 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
       data.atoms = data.atoms[:,:batch_per_device,:, :]
       data.charges = data.charges[:,:batch_per_device,:]
       data.positions = data.positions[:,:batch_per_device,:]
-    elif(batch_size
-        and data.positions.shape[0] * data.positions.shape[1] < batch_size):
-      raise ValueError(
-          f'Wrong batch size in loaded data. Expected {batch_size}, found '
-          f'{data.positions.shape[0] * data.positions.shape[1]}.')
-    else:
+    elif(data.positions.shape[0] * data.positions.shape[1] == batch_size):
       # Redistribute data across devices if device count changed
       if previous_devices != current_devices:
         total_batch = data.positions.shape[0] * data.positions.shape[1]

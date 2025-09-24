@@ -240,6 +240,11 @@ def initialize_training_data_and_checkpoints(
           total_host_batch_size,
           core_electrons,
       )
+    else:
+      if data.positions.shape[0] * data.positions.shape[1] < host_batch_size:
+        raise ValueError(
+            f'Wrong batch size in loaded data. Expected {host_batch_size}, found '
+            f'{data.positions.shape[0] * data.positions.shape[1]}.')
   else:
     logging.info('No checkpoint found. Training new model.')
     key, data = init_mcmc_data(
