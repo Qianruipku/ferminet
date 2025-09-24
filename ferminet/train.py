@@ -38,6 +38,7 @@ from ferminet.utils import statistics
 from ferminet.utils import system
 from ferminet.utils import utils
 from ferminet.utils import writers
+from ferminet.utils import check
 import jax
 from jax.experimental import multihost_utils
 import jax.numpy as jnp
@@ -299,6 +300,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   Raises:
     ValueError: if an illegal or unsupported value in cfg is detected.
   """
+  # check cfg is valid
+  check.validate_config(cfg)
   # Device logging
   num_devices = jax.local_device_count()
   num_hosts = jax.device_count() // num_devices
