@@ -216,7 +216,7 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
     
     opt_state = adapt_kfac_opt_state(previous_opt_state, current_devices)
     
-    single_device_mcmc_width = ckpt_data['mcmc_width'].item()
+    single_device_mcmc_width = ckpt_data['mcmc_width']
     mcmc_width = kfac_jax.utils.replicate_all_local_devices(single_device_mcmc_width)
     if ckpt_data['density_state']:
       density_state = observables.DensityState(
