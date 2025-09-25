@@ -98,6 +98,7 @@ def save(save_path: str,
          params,
          opt_state,
          mcmc_width,
+         pmoves,
          density_state: Optional[observables.DensityState] = None,
          sharded_key: Optional[jax.random.PRNGKey] = None,
          weighted_stats: Optional[statistics.WeightedStats] = None) -> str:
@@ -137,6 +138,7 @@ def save(save_path: str,
           params=single_device_params,
           opt_state=np.asarray(opt_state, dtype=object),
           mcmc_width=single_device_mcmc_width,
+          pmoves=pmoves,
           density_state=(dataclasses.asdict(density_state)
                          if density_state else None),
           sharded_key=sharded_key,
@@ -218,6 +220,7 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
     
     single_device_mcmc_width = ckpt_data['mcmc_width']
     mcmc_width = kfac_jax.utils.replicate_all_local_devices(single_device_mcmc_width)
+    pmoves = ckpt_data.get('pmoves', None)
     if ckpt_data['density_state']:
       density_state = observables.DensityState(
           **ckpt_data['density_state'].item())
@@ -271,4 +274,4 @@ def restore(restore_filename: str, batch_size: Optional[int] = None):
       data.positions = data.positions.astype(default_dtype)
       params = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), params)
       opt_state = jax.tree_util.tree_map(lambda x: jax.lax.convert_element_type(x, default_dtype), opt_state)
-  return t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats
+  return t, data, params, opt_state, mcmc_width, pmoves, density_state, sharded_key, weighted_stats

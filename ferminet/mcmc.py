@@ -347,7 +347,7 @@ def update_mcmc_width(
   """
 
   t_since_mcmc_update = t % adapt_frequency
-  if np.ndim(width) == 0:
+  if np.ndim(pmoves) == 1: # sample_all is True
     pmoves[t_since_mcmc_update] = pmove.reshape(-1)[0].item()
     if t > 0 and t_since_mcmc_update == 0:
       if np.mean(pmoves) > pmove_max:
@@ -357,8 +357,8 @@ def update_mcmc_width(
   else:
       if t > 0 and t_since_mcmc_update == 0:
         mean_pmoves = jnp.mean(pmoves, axis=1)
-        width = width.at[jnp.where(mean_pmoves > pmove_max)].multiply(1.1)
-        width = width.at[jnp.where(mean_pmoves < pmove_min)].divide(1.1)
+        width = width.at[:, jnp.where(mean_pmoves > pmove_max)].multiply(1.1)
+        width = width.at[:, jnp.where(mean_pmoves < pmove_min)].divide(1.1)
         pmoves[:,:] = 0
       pmoves[:,t%adapt_frequency] = pmove
   if apply_pbc:

@@ -162,6 +162,7 @@ def initialize_training_data_and_checkpoints(
     Any,  # params
     Optional[Any],  # opt_state_ckpt
     Optional[jnp.ndarray],  # mcmc_width_ckpt
+    Optional[jnp.ndarray],  # pmoves_ckpt
     Optional[Any],  # density_state_ckpt
     Optional[jax.random.PRNGKey],  # sharded_key_ckpt
     Optional[Any],  # weighted_stats_ckpt
@@ -195,6 +196,7 @@ def initialize_training_data_and_checkpoints(
      params,
      opt_state_ckpt,
      mcmc_width_ckpt,
+     pmoves_ckpt,
      density_state_ckpt,
      sharded_key_ckpt,
      weighted_stats_ckpt) = checkpoint.restore(
@@ -233,6 +235,7 @@ def initialize_training_data_and_checkpoints(
     params = None  # This will need to be set by the caller after network initialization
     opt_state_ckpt = None
     mcmc_width_ckpt = None
+    pmoves_ckpt = None
     density_state_ckpt = None
     sharded_key_ckpt = None
     weighted_stats_ckpt = None
@@ -244,6 +247,7 @@ def initialize_training_data_and_checkpoints(
       params,
       opt_state_ckpt,
       mcmc_width_ckpt,
+      pmoves_ckpt,
       density_state_ckpt,
       sharded_key_ckpt,
       weighted_stats_ckpt
