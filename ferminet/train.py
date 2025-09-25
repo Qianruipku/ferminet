@@ -500,6 +500,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
    params_from_ckpt,
    opt_state_ckpt,
    mcmc_width_ckpt,
+   pmoves,
    density_state_ckpt,
    sharded_key_ckpt,
    weighted_stats_ckpt) = init.initialize_training_data_and_checkpoints(
@@ -803,7 +804,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   else:
     mcmc_width = kfac_jax.utils.replicate_all_local_devices(
         jnp.asarray(cfg.mcmc.move_width))
-  pmoves = np.zeros(cfg.mcmc.adapt_frequency)
+  if pmoves is None:
+    pmoves = np.zeros(cfg.mcmc.adapt_frequency)
 
   if t_init == 0:
     logging.info('Burning in MCMC chain for %d steps', cfg.mcmc.burn_in)
@@ -998,7 +1000,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         return current_time
       save_according_time = first_node_time() - time_of_last_ckpt > cfg.log.save_tfreq * 60
       if save_according_time or t % cfg.log.save_freq == 0:
-        checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, 
+        checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, pmoves,
                        density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats)
         if save_according_time:
           time_of_last_ckpt = first_node_time()
