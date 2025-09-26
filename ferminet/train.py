@@ -18,6 +18,7 @@ import functools
 import importlib
 import os
 import time
+from collections import deque
 from typing import Optional, Mapping, Sequence, Tuple, Union
 
 from absl import logging
@@ -994,16 +995,18 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   with writer_manager as writer:
     # Main training loop
     num_resets = 0  # used if reset_if_nan is true
-    training_start_time = time.time()
-    step_start_time = time.time()
+
     #max_width is half of the lattice
     lattice = cfg.system.pbc.lattice_vectors
     if lattice is not None:
       max_width = jnp.min(jnp.linalg.norm(lattice, axis=0)) / 2.0
     else:
       max_width = 20.0
+    
+    training_start_time = old_time = time.time()
+    timestamps_queue = deque(maxlen=101)
+    timestamps_queue.append(old_time)
     for t in range(t_init, cfg.optim.iterations):
-      iter_start_time = time.time()
       sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
       data, params, opt_state, loss, aux_data, pmove = step(
           data,
@@ -1098,16 +1101,19 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       # Logging
       if t % cfg.log.stats_frequency == 0 and jax.process_index() == 0:
         current_time = time.time()
-        iter_time = current_time - iter_start_time
+        step_time = current_time - old_time
+        old_time = current_time
+        timestamps_queue.append(old_time)
+        
         total_time = current_time - training_start_time
-        avg_time_per_step = total_time / (t - t_init + 1) if t > t_init else iter_time
-        remaining_time = avg_time_per_step * (cfg.optim.iterations - t - 1)
+        avg_time = (timestamps_queue[-1] - timestamps_queue[0]) / (len(timestamps_queue) - 1)
+        remaining_time = avg_time * (cfg.optim.iterations - t - 1)
         
         logging_str = ('Step %05d: '
                        '%03.4f E_h, exp. variance=%03.4f E_h^2, pmove=%0.2f, '
-                       'time: %0.2fs/step, total: %0.1fmin, eta: %0.1fmin')
+                       'step time: %0.2fs, total: %0.1fmin, eta: %0.1fmin')
         logging_args = (t, loss, weighted_stats.variance, np.mean(pmove),
-                       avg_time_per_step, total_time/60, remaining_time/60)
+                       step_time, total_time/60, remaining_time/60)
         writer_kwargs = {
             'step': t,
             'energy': np.asarray(loss),
