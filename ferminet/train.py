@@ -541,8 +541,13 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # started from a previous calculation but then resume from their own
   # checkpoints in the event of pre-emption.
 
-  ckpt_save_path = checkpoint.create_save_path(cfg.log.save_path)
-
+  if jax.process_index() == 0:
+    ckpt_save_path = checkpoint.create_save_path(cfg.log.save_path)
+    jax.experimental.multihost_utils.sync_global_devices("save_path")
+  else:
+    jax.experimental.multihost_utils.sync_global_devices("save_path")
+    ckpt_save_path = checkpoint.get_restore_path(cfg.log.save_path)
+  
   # Initialize training data and handle checkpoints
   (t_init,
    data,
@@ -1164,7 +1169,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       save_according_time = first_node_time() - time_of_last_ckpt > cfg.log.save_tfreq * 60
       if save_according_time or t % cfg.log.save_freq == 0:
         checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, pmoves,
-                       density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats)
+                       density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats,
+                       sync_states=cfg.restart.sync_states, check_consistency=cfg.restart.check_consistency)
         if save_according_time:
           time_of_last_ckpt = first_node_time()
 

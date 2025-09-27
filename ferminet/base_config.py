@@ -370,6 +370,8 @@ def default() -> ml_collections.ConfigDict:
           'load_key': True,  # If True, load the sharded key from the checkpoint
           'load_opt_state': True,  # If True, load the optimizer state from the checkpoint
           'load_data': True,  # If True, load data from checkpoint, otherwise reinitialize
+          'check_consistency': False,  # If True, check state consistency of different devices before saving checkpoint
+          'sync_states': False,  # If True, synchronize state from device 0 to all other devices and hosts before saving checkpoint
       }
   })
 
