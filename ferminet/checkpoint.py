@@ -24,6 +24,7 @@ from absl import logging
 from ferminet import networks
 from ferminet import observables
 from ferminet.utils import statistics
+from ferminet.utils import state_consistency as stat_cons
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -101,7 +102,11 @@ def save(save_path: str,
          pmoves,
          density_state: Optional[observables.DensityState] = None,
          sharded_key: Optional[jax.random.PRNGKey] = None,
-         weighted_stats: Optional[statistics.WeightedStats] = None) -> str:
+         weighted_stats: Optional[statistics.WeightedStats] = None,
+         sync_states: bool = False,
+         check_consistency: bool = False,
+         consistency_rtol: float = 1e-5,
+         consistency_atol: float = 1e-8) -> str:
   """Saves checkpoint information to a npz file.
 
   Args:
@@ -116,11 +121,37 @@ def save(save_path: str,
     density_state: optional state of the density matrix calculation
     sharded_key: optional sharded random key state
     weighted_stats: optional exponentially weighted statistics
+    sync_states: whether to synchronize state (params, opt_state, mcmc_width) from device 0 to all other devices/hosts
+    check_consistency: whether to check state consistency (params, opt_state, mcmc_width) across devices/hosts
+    consistency_rtol: relative tolerance for consistency check
+    consistency_atol: absolute tolerance for consistency check
 
   Returns:
     path to checkpoint file.
   """
   process = jax.process_index()
+  
+  # Check state consistency (params, opt_state, mcmc_width)
+  if check_consistency:
+    state_dict = {
+        'params': params,
+        'opt_state': opt_state,
+        'mcmc_width': mcmc_width
+    }
+    consistency_results = stat_cons.check_state_consistency(
+        state_dict, rtol=consistency_rtol, atol=consistency_atol)
+    
+    if not consistency_results['overall']:
+      inconsistent_states = [name for name, consistent in consistency_results.items() 
+                           if name != 'overall' and not consistent]
+      logging.warning(f'Detected inconsistency in states: {inconsistent_states}')
+
+  if sync_states:
+    synced_states = stat_cons.synchronize_state_from_device0(state_dict)
+    params = synced_states['params']
+    opt_state = synced_states['opt_state'] 
+    mcmc_width = synced_states['mcmc_width']
+  
   if (jax.device_count() // jax.local_device_count()) > 1:
     data = multihost_utils.process_allgather(data)
     sharded_key = multihost_utils.process_allgather(sharded_key)
