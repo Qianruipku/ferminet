@@ -217,10 +217,16 @@ def make_training_step(
                                                            state,
                                                            loss_key)
     if reset_if_nan:
-      new_params = jax.lax.cond(jnp.isnan(loss),
+      nan_val = jnp.any(jnp.isnan(loss)) or \
+                jnp.any(jnp.isnan(new_params['envelope'][0]['sigma'][0])) # It may have bug if it does not exist
+      # Ensure all hosts agree on whether to reset by using global reduction
+      any_nan_loss = constants.pmean(nan_val.astype(jnp.float32)) > 0.0
+      if jax.process_index() == 0 and any_nan_loss:
+          logging.warning('NaN detected in loss or parameters, resetting to previous state.')
+      new_params = jax.lax.cond(any_nan_loss,
                                 lambda: params,
                                 lambda: new_params)
-      new_state = jax.lax.cond(jnp.isnan(loss),
+      new_state = jax.lax.cond(any_nan_loss,
                                lambda: state,
                                lambda: new_state)
     return data, new_params, new_state, loss, aux_data, pmove
@@ -286,9 +292,16 @@ def make_kfac_training_step(
         damping=shared_damping,
     )
 
-    if reset_if_nan and jnp.any(jnp.isnan(stats['loss'])):
-      new_params = old_params
-      new_state = old_state
+    if reset_if_nan:
+      nan_val = jnp.any(jnp.isnan(stats['loss'])) or \
+                jnp.any(jnp.isnan(new_params['envelope'][0]['sigma'][0, 0])) # It may have bug if it does not exist
+      # Ensure all hosts agree on whether to reset by using global reduction
+      any_nan_loss = constants.pmean(nan_val.astype(jnp.float32)) > 0.0
+      if any_nan_loss:
+        if jax.process_index() == 0:
+          logging.warning('NaN detected in loss or parameters, resetting to previous state.')
+        new_params = old_params
+        new_state = old_state
     return data, new_params, new_state, stats['loss'], stats['aux'], pmove
 
   return step
