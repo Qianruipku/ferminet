@@ -21,5 +21,6 @@ if __name__ == "__main__":
     f = open("energy.txt", 'w')
 
     f.write(str(reblock_data[opt[0]]))
+    print(str(reblock_data[opt[0]]))
 
     f.close()

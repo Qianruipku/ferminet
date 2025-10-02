@@ -886,16 +886,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
   if writer_manager is None:
     # Check if we're resuming from a checkpoint and train_stats.csv exists
-    train_stats_file = os.path.join(ckpt_save_path, 'train_stats.csv')
-    append_mode = t_init > 0 and os.path.exists(train_stats_file)
+    need_append = t_init > 0
     writer_manager = writers.Writer(
         name='train_stats',
         schema=train_schema,
         directory=ckpt_save_path,
-        iteration_key=None,
-        log=False,
-        append=append_mode,
-        flush_frequency=cfg.log.save_freq)
+        append=need_append)
   with writer_manager as writer:
     # Main training loop
     num_resets = 0  # used if reset_if_nan is true
@@ -960,6 +956,18 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         else:
           num_resets = 0
 
+      def first_node_time():
+        current_time = 0.0
+        if jax.process_index() == 0:
+          current_time = time.time()
+        current_time  = jax.experimental.multihost_utils.broadcast_one_to_all(
+          current_time)
+        return current_time
+      this_save_time = first_node_time()
+      save_according_time = this_save_time - time_of_last_ckpt > cfg.log.save_tfreq * 60
+      print_log = save_according_time or t % cfg.log.save_freq == 0 or t == cfg.optim.iterations - 1
+      if save_according_time:
+        time_of_last_ckpt = this_save_time
       # Logging
       if t % cfg.log.stats_frequency == 0 and jax.process_index() == 0:
         current_time = time.time()
@@ -1000,35 +1008,25 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         logging.info(logging_str, *logging_args)
         writer.write(t, **writer_kwargs)
 
-      # Log data about observables too big to fit in a CSV
-      if cfg.system.states:
-        energy_matrix = aux_data.local_energy_mat
-        energy_matrix = np.nanmean(np.nanmean(energy_matrix, axis=0), axis=0)
-        np.save(energy_matrix_file, energy_matrix)
-        if cfg.observables.s2:
-          np.save(s2_matrix_file, observable_data['s2'])
-        if cfg.observables.dipole:
-          np.save(dipole_matrix_file, observable_data['dipole'])
-      if cfg.observables.density:
-        np.save(density_matrix_file, observable_data['density'])
-      if cfg.observables.rho_r.calculate:
-        np.save(rho_r_file, observable_data['rho_r'])
+      if print_log:
+        # Log data about observables too big to fit in a CSV
+        if cfg.system.states and jax.process_index() == 0:
+          energy_matrix = aux_data.local_energy_mat
+          energy_matrix = np.nanmean(np.nanmean(energy_matrix, axis=0), axis=0)
+          np.save(energy_matrix_file, energy_matrix)
+          if cfg.observables.s2:
+            np.save(s2_matrix_file, observable_data['s2'])
+          if cfg.observables.dipole:
+            np.save(dipole_matrix_file, observable_data['dipole'])
+        if cfg.observables.density:
+          np.save(density_matrix_file, observable_data['density'])
+        if cfg.observables.rho_r.calculate:
+          np.save(rho_r_file, observable_data['rho_r'])
 
-      # Checkpointing
-      def first_node_time():
-        current_time = 0.0
-        if jax.process_index() == 0:
-          current_time = time.time()
-        current_time  = jax.experimental.multihost_utils.broadcast_one_to_all(
-          current_time)
-        return current_time
-      save_according_time = first_node_time() - time_of_last_ckpt > cfg.log.save_tfreq * 60
-      if save_according_time or t % cfg.log.save_freq == 0:
+        # Checkpointing
         checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, pmoves,
                        density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats,
                        sync_states=cfg.restart.sync_states, check_consistency=cfg.restart.check_consistency)
-        if save_according_time:
-          time_of_last_ckpt = first_node_time()
 
     # Training completed - log timing summary
     total_training_time = time.time() - training_start_time
