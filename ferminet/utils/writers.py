@@ -27,60 +27,43 @@ class Writer(contextlib.AbstractContextManager):
                name: str,
                schema: Sequence[str],
                directory: str = 'logs/',
-               iteration_key: Optional[str] = 't',
-               log: bool = True,
-               append: bool = False,
-               flush_frequency: Optional[int] = None):
+               append: bool = False):
     """Initialise Writer.
 
     Args:
       name: file name for CSV.
       schema: sequence of keys, corresponding to each data item.
       directory: directory path to write file to.
-      iteration_key: if not None or a null string, also include the iteration
-        index as the first column in the CSV output with the given key.
-      log: Also log each entry to stdout.
       append: if True, append to existing file instead of overwriting.
-      flush_frequency: if not None, flush to disk every N writes. If None, 
-        never flush automatically.
     """
     self._schema = schema
     if not os.path.isdir(directory):
       os.mkdir(directory)
     self._filename = os.path.join(directory, name + '.csv')
-    self._iteration_key = iteration_key
-    self._log = log
-    self._append = append
-    self._flush_frequency = flush_frequency
+    self._append = append and os.path.exists(self._filename) and os.path.getsize(self._filename) > 0
 
   def __enter__(self):
     mode = 'a' if self._append else 'w'
     self._file = open(self._filename, mode, encoding='UTF-8')
     # write top row of csv only if not appending or file is empty
-    if not self._append or (self._append and os.path.getsize(self._filename) == 0):
-      if self._iteration_key:
-        self._file.write(f'{self._iteration_key},')
+    if not self._append:
       self._file.write(','.join(self._schema) + '\n')
     self._buffer = []
     return self
 
-  def write(self, t: int, **data):
+  def write(self, if_print: bool, **data):
     """Writes to buffer, only writes to file and log when flush condition is met."""
     row = [str(data.get(key, '')) for key in self._schema]
-    if self._iteration_key:
-      row.insert(0, str(t))
     for key in data:
       if key not in self._schema:
         raise ValueError(f'Not a recognized key for writer: {key}')
     row_str = ','.join(row) + '\n'
     self._buffer.append(row_str)
 
-    if self._flush_frequency is not None and t % self._flush_frequency == 0:
+    if if_print:
       self._file.writelines(self._buffer)
       self._file.flush()
       self._buffer.clear()
-      if self._log:
-        logging.info('Iteration %s: %s', t, data)
 
   def flush(self):
     self._file.flush()

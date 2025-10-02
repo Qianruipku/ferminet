@@ -39,6 +39,8 @@ df = pd.read_csv(file_path)
 
 x_data = df.iloc[:, 0]
 y_data = df.iloc[:, 2]
+var = pd.to_numeric(df.iloc[-1, 3], errors='coerce')
+last_y = y_data.iloc[-1]
 
 
 plt.figure(figsize=tuple(args.figsize))
@@ -46,8 +48,11 @@ plt.plot(x_data, y_data, linewidth=1.5, color='blue', alpha=0.8)
 
 # Set Y-axis limits if specified
 if args.ylim is not None:
-    plt.ylim(args.ylim[0], args.ylim[1])
-    print(f"Y-axis limits set to: {args.ylim[0]} - {args.ylim[1]}")
+    ymin, ymax = args.ylim
+else:
+    ymin, ymax = last_y - 5 * abs(var), last_y + 5 * abs(var)
+plt.ylim(ymin, ymax)
+print(f"Y-axis limits set to: {ymin} - {ymax}")
 
 # Set X-axis limits if specified
 if args.xlim is not None:
