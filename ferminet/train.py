@@ -911,7 +911,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     # optax/optax-compatible optimizer (ADAM, LAMB, ...)
     opt_state = jax.pmap(optimizer.init)(params)
     if opt_state_ckpt is not None and cfg.restart.load_opt_state:
-      opt_state = tuple(opt_state_ckpt)
+      opt_state = opt_state_ckpt
     step = make_training_step(
         mcmc_step=mcmc_step,
         optimizer_step=make_opt_update_step(evaluate_loss, optimizer),
