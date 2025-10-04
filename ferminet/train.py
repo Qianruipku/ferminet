@@ -217,12 +217,11 @@ def make_training_step(
                                                            state,
                                                            loss_key)
     if reset_if_nan:
-      nan_val = jnp.any(jnp.isnan(loss)) or \
-                jnp.any(jnp.isnan(new_params['envelope'][0]['sigma'][0])) # It may have bug if it does not exist
+      nan_val = jnp.logical_or(
+          jnp.any(jnp.isnan(loss)),
+          jnp.any(jnp.isnan(new_params['envelope'][0]['sigma'][0])))
       # Ensure all hosts agree on whether to reset by using global reduction
       any_nan_loss = constants.pmean(nan_val.astype(jnp.float32)) > 0.0
-      if jax.process_index() == 0 and any_nan_loss:
-          logging.warning('NaN detected in loss or parameters, resetting to previous state.')
       new_params = jax.lax.cond(any_nan_loss,
                                 lambda: params,
                                 lambda: new_params)
