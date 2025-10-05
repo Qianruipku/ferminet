@@ -35,28 +35,25 @@ class TestTetrahedralizationIntegration:
         direction = jnp.array([1.0, 0.0, 0.0])
         
         # Plane positions
-        qz = jnp.array([0.5])  # Single plane at x = 0.5
+        qz = jnp.array([0, 0.2, 0.5, 0.8, 1.0])  # Planes at x = 0, 0.2, 0.5, 0.8, 1.0
         
         # Compute integral
         result = tetra_integration(
             grid_points, values, direction, qz
         )
-        
-        # For f(x,y,z) = x and plane at x = 0.5:
-        # The intersection is a square [0,1] x [0,1] with area = 1
-        # The function value at x = 0.5 is 0.5
-        # Expected integral ≈ 1.0 * 0.5 = 0.5
-        expected = 0.5
-        
+
+        expected = jnp.array([0.0, 0.2, 0.5, 0.8, 1.0])
+
         # Allow some numerical tolerance (increased for realistic expectations)
-        assert jnp.abs(result[0] - expected) < 0.15, f"Expected {expected}, got {result[0]}"
+        for i, (res, exp) in enumerate(zip(result, expected)):
+            assert jnp.abs(res - exp) < 1e-4, f"Plane {i}: Expected {exp}, got {res}"
     
     def test_quadratic_function_integration(self):
         """
         Test integration with a quadratic function f(x,y,z) = x^2.
         """
         # Create a finer grid for better accuracy
-        n = 3
+        n = 20
         x_coords = jnp.linspace(0, 1, n)
         y_coords = jnp.linspace(0, 1, n)
         z_coords = jnp.linspace(0, 1, n)
@@ -72,7 +69,7 @@ class TestTetrahedralizationIntegration:
         direction = jnp.array([1.0, 0.0, 0.0])
         
         # Multiple plane positions
-        qz = jnp.linspace(0.1, 0.9, 5)
+        qz = jnp.linspace(0, 1, 8)
         
         # Compute integrals
         results = tetra_integration(
@@ -87,9 +84,8 @@ class TestTetrahedralizationIntegration:
         
         # Check each plane (relaxed tolerance for coarse grid)
         for i, (result, exp) in enumerate(zip(results, expected)):
-            rel_error = jnp.abs(result - exp) / (exp + 1e-8)
-            assert rel_error < 8.0, f"Plane {i}: Expected {exp}, got {result}, rel_error={rel_error}"
-    
+            assert jnp.abs(result - exp) < 1e-2, f"Plane {i}: Expected {exp}, got {result}"
+
     def test_constant_function_integration(self):
         """
         Test integration with a constant function f(x,y,z) = c.
@@ -121,15 +117,14 @@ class TestTetrahedralizationIntegration:
         expected_integral = constant_value * expected_area
         
         for i, result in enumerate(results):
-            rel_error = jnp.abs(result - expected_integral) / expected_integral
-            assert rel_error < 0.0001, f"Plane {i}: Expected ~{expected_integral}, got {result}"
-    
+            assert jnp.abs(result - expected_integral) < 1e-4, f"Plane {i}: Expected ~{expected_integral}, got {result}"
+
     def test_polynomial_function_integration(self):
         """
         Test integration with a polynomial function f(x,y,z) = x + y + z.
         """
         # Create grid points
-        n = 3
+        n = 11
         coords = jnp.linspace(0, 1, n)
         X, Y, Z = jnp.meshgrid(coords, coords, coords, indexing='ij')
         grid_points = jnp.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
@@ -141,23 +136,20 @@ class TestTetrahedralizationIntegration:
         direction = jnp.array([1.0, 0.0, 0.0])
         
         # Plane position
-        x0 = 0.5
-        qz = jnp.array([x0])
+        qz = jnp.linspace(0.9, 1, 10)
         
         # Compute integral
         result = tetra_integration(
             grid_points, values, direction, qz
         )
-        
         # For f(x,y,z) = x + y + z and plane at x = x0:
         # The intersection is [0,1] x [0,1], and on this plane: f = x0 + y + z
         # The average value over the plane is: x0 + 0.5 + 0.5 = x0 + 1.0
         # The area is 1.0, so expected integral ≈ (x0 + 1.0) * 1.0
-        expected = x0 + 1.0
-        
-        rel_error = jnp.abs(result[0] - expected) / expected
-        assert rel_error < 0.3, f"Expected ~{expected}, got {result[0]}, rel_error={rel_error}"
-    
+        expected = qz + 1.0
+        for i, (result, expected) in enumerate(zip(result, expected)):
+            assert jnp.abs(result - expected) < 1e-4, f"Plane {i}: Expected {expected}, got {result}"
+
     def test_batch_processing(self):
         """
         Test that batch processing gives the same result as non-batched processing.
@@ -246,11 +238,11 @@ def run_convergence_test():
     def analytical_solution(x0):
         return 0.5 * x0
     
-    x0 = 0.6
+    x0 = 3.0/7.0
     qz = jnp.array([x0])
     direction = jnp.array([1.0, 0.0, 0.0])
     
-    grid_sizes = [3, 4, 5, 6]
+    grid_sizes = [3, 4, 6, 9, 13, 37]
     errors = []
     
     for n in grid_sizes:

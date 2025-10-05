@@ -64,8 +64,9 @@ def integrate_over_single_tetrahedra(
         qz: Projection coordinates array, positions of the planes along the direction, shape (n_planes,)
     
     Returns:
-        Integral values array: intersection_area × interpolated_value, shape (n_planes,)
+        Integral values array: intersection_area x interpolated_value, shape (n_planes,)
     """
+    EPS = jnp.finfo(qz.dtype).eps * 32.0  # Small epsilon to avoid division by zero
     # Ensure direction vector is normalized
     direction = direction / jnp.linalg.norm(direction)
     
@@ -87,8 +88,8 @@ def integrate_over_single_tetrahedra(
     # Compute S1: cross-sectional area at vertex v4 (q1 position)
     # The cross-section is a triangle formed by v4 and intersection points
     # on edges v1-v5 and v1-v8
-    t1_15 = jnp.where(jnp.abs(q2 - q0) > 1e-12, (q1 - q0) / (q2 - q0), 0.0)
-    t1_18 = jnp.where(jnp.abs(q3 - q0) > 1e-12, (q1 - q0) / (q3 - q0), 0.0)
+    t1_15 = jnp.where(jnp.abs(q2 - q0) > EPS, (q1 - q0) / (q2 - q0), 0.0)
+    t1_18 = jnp.where(jnp.abs(q3 - q0) > EPS, (q1 - q0) / (q3 - q0), 0.0)
     
     v2 = v1 + t1_15 * (v5 - v1)  # intersection on edge v1-v5 at q1
     v3 = v1 + t1_18 * (v8 - v1)  # intersection on edge v1-v8 at q1
@@ -100,8 +101,8 @@ def integrate_over_single_tetrahedra(
     # Compute S2: cross-sectional area at vertex v5 (q2 position)
     # The cross-section is a triangle formed by v5 and intersection points
     # on edges v1-v8 and v4-v8
-    t2_18 = jnp.where(jnp.abs(q3 - q0) > 1e-12, (q2 - q0) / (q3 - q0), 0.0)
-    t2_48 = jnp.where(jnp.abs(q3 - q1) > 1e-12, (q2 - q1) / (q3 - q1), 0.0)
+    t2_18 = jnp.where(jnp.abs(q3 - q0) > EPS, (q2 - q0) / (q3 - q0), 0.0)
+    t2_48 = jnp.where(jnp.abs(q3 - q1) > EPS, (q2 - q1) / (q3 - q1), 0.0)
     
     v6 = v1 + t2_18 * (v8 - v1)  # intersection on edge v1-v8 at q2
     v7 = v4 + t2_48 * (v8 - v4)  # intersection on edge v4-v8 at q2
@@ -116,10 +117,19 @@ def integrate_over_single_tetrahedra(
     L1L2sintheta = jnp.linalg.norm(jnp.cross(l34, l56))
 
     # Vectorized integration over three regions based on plane positions
-    # Region masks with degenerate region handling
-    mask_region_I = (qz >= q0) & (qz <= q1) & (q1 > q0)
-    mask_region_II = (qz > q1) & (qz <= q2) & (q2 > q1)
-    mask_region_III = (qz > q2) & (qz <= q3) & (q3 > q2)
+    
+
+    # Main region masks
+    mask_region_I = (qz >= q0) & (qz <= q1) & (q1 > q0 + EPS)
+    mask_region_II = (qz > q1) & (qz <= q2) & (q2 > q1 + EPS)
+    mask_region_III = (qz > q2) & (qz <= q3) & (q3 > q2 + EPS)
+    # Degenerate regions where two or more vertices project to the same position
+    mask_degenerateI =  (jnp.abs(q0 - q1) <= EPS) & (jnp.abs(q1 - q2) <= EPS) & (qz > q0) & (qz <= q2) & (q3 > q2 + EPS)
+    mask_degenerateII =  (q1 > q0 + EPS) & (jnp.abs(q1 - q2) <= EPS) & (qz > q1) & (qz <= q2) & (q3 > q2 + EPS)
+    mask_degenerateIII =  (jnp.abs(q1 - q2) <= EPS) & (jnp.abs(q2 - q3) <= EPS) & (qz > q1) & (qz <= q3) & (q1 > q0 + EPS)
+    DS1 = _compute_triangle_area(v1, v4, v5)
+    DS2 = _compute_triangle_area(v3, v4, v5)
+    DS3 = _compute_triangle_area(v4, v5, v8)
 
     # Initialize result array
     result = jnp.zeros_like(qz)
@@ -132,7 +142,7 @@ def integrate_over_single_tetrahedra(
     # Region II: plane between q1 and q2 (most complex case)
     region_II_value = (_f(qz, S1, f5, f4, f3, f2, q2, q1) + 
                       _f(qz, S2, f4, f5, f6, f7, q1, q2) + 
-                      _g(qz, L1L2sintheta, f4, f5, f6, f7, q1, q2))
+                      _g(qz, L1L2sintheta, f3, f4, f5, f6, q1, q2))
     result = jnp.where(mask_region_II, region_II_value, result)
     
     # Region III: plane between q2 and q3
@@ -140,8 +150,21 @@ def integrate_over_single_tetrahedra(
                       _f(qz, S2, f8, f7, f6, f5, q3, q2), 
                       result)
     
+    # Degenerate Region I: q0 == q1 == q2 < q3
+    result = jnp.where(mask_degenerateI, _deg_f(DS1/2, f5, f6, f7), result) # double counting DS1/2
+
+    # Degenerate Region II: q0 < q1 == q2 < q3
+    result = jnp.where(mask_degenerateII, _deg_f(DS2, f2, f3, f4), result)
+
+    # Degenerate Region III: q0 < q1 == q2 == q3
+    result = jnp.where(mask_degenerateIII, _deg_f(DS3/2, f7, f6, f5), result) # double counting DS3/2
     return result
 
+def _deg_f(S, a, b, c):
+    """
+    Compute the degenerate f-function as t ≈ s.
+    """
+    return (S / 3) * (a + b + c)
 
 def _f(qz, S, a, b, c, d, s, t):
     """
