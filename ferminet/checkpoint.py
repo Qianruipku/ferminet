@@ -93,6 +93,21 @@ def get_restore_path(restore_path: Optional[str] = None) -> Optional[str]:
   return ckpt_restore_path
 
 
+def save_positions(positions: jnp.ndarray, step: int, save_path: str):
+  """Saves out the electron positions in unwrapped coordinates.
+
+  Args:
+    positions: electron positions to save, shape (num_devices, batch_per_device, num_electrons, 3)
+    step: current training step, used to name the file
+    save_path: path to directory to save positions to. The position file is
+      save_path/positions_$step.npy, where $step is the current training step.
+  """
+  process = jax.process_index()
+  all_positions = multihost_utils.process_allgather(positions) # shape (num_hosts, num_local_devices, batch_per_device, num_electrons*3)
+  if process == 0:
+    pos_filename = os.path.join(save_path, f'positions_{step:06d}.npy')
+    np.save(pos_filename, all_positions)
+
 def save(save_path: str,
          t: int,
          data: networks.FermiNetData,

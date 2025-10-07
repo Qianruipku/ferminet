@@ -244,6 +244,7 @@ def default() -> ml_collections.ConfigDict:
           'blocks': 1,  # Number of blocks to split the MCMC sampling into
           'fake_energy': False,  # If true, use a fake energy to sample
           'sample_all': False,  # If true, sample all particles in each step. If False, sample only one particle at a time.
+          'save_positions': False,  # Save the electron positions in pos.npy
       },
       'network': {
           'network_type': 'ferminet',  # One of 'ferminet' or 'psiformer'.
