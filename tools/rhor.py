@@ -31,11 +31,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Optional, Sequence
-from typing import List, Iterable, Tuple
+from typing import Iterable, Tuple
 import numpy as np
 import jax.numpy as jnp
 import math
+from ferminet.utils.min_distance import min_image_distance_triclinic
 
 
 def parse_args():
@@ -156,6 +156,9 @@ def main():
     centers = 0.5 * (edges[:-1] + edges[1:])
     dr = edges[1] - edges[0]
     counts = np.zeros(bins, dtype=float)
+    lattice_vec = jnp.array([[1.0, 0.0, 0.0],
+                             [0.0, 1.0, 0.0],
+                             [0.0, 0.0, 1.0]])
 
     files_read = []
     total_electrons_counted = 0
@@ -184,14 +187,15 @@ def main():
             disp = pos - ref_point
         else:
             disp = pos - ref_pos
-        d = jnp.linalg.norm(disp, axis=1)
+        disp = jnp.reshape(disp, (-1, 3))
+        _, d = min_image_distance_triclinic(disp, lattice_vec, radius=1)
     # keep r <= rmax
         d = d[d <= rmax]
         hist, _ = jnp.histogram(d, bins=edges)
         counts += hist
         files_read.append(fname)
         total_electrons_counted += d.size
-        print(f'Processed {fname}: counted {d.size} electrons within rmax')
+        print(f'Processed {fname}: counted {d.size} particles within rmax')
 
     n_snapshots = len(files_read) * pos.shape[0]
     if n_snapshots == 0:
