@@ -235,6 +235,7 @@ def default() -> ml_collections.ConfigDict:
           # mean of the distance to the nuclei.
           'scale_by_nuclear_distance': False,
           'blocks': 1,  # Number of blocks to split the MCMC sampling into
+          'save_positions': False,  # Save the electron positions in pos.npy
       },
       'network': {
           'network_type': 'ferminet',  # One of 'ferminet' or 'psiformer'.

@@ -510,6 +510,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   else:
     jax.experimental.multihost_utils.sync_global_devices("save_path")
     ckpt_save_path = checkpoint.get_restore_path(cfg.log.save_path)
+  if cfg.mcmc.save_positions and jax.process_index() == 0:
+    os.makedirs("positions", exist_ok=True)
   
   # Initialize training data and handle checkpoints
   (t_init,
@@ -1026,6 +1028,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         checkpoint.save(ckpt_save_path, t, data, params, opt_state, mcmc_width, pmoves,
                        density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats,
                        sync_states=cfg.restart.sync_states, check_consistency=cfg.restart.check_consistency)
+      
+      if cfg.mcmc.save_positions:
+        checkpoint.save_positions(data.positions, t, "positions")
 
     # Training completed - log timing summary
     total_training_time = time.time() - training_start_time
