@@ -1007,7 +1007,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             logging_str += ', <S^2>=%03.4f'
             logging_args += obs_data,
         logging.info(logging_str, *logging_args)
-        writer.write(t, **writer_kwargs)
+        writer.write(print_log, **writer_kwargs)
 
       if print_log:
         # Log data about observables too big to fit in a CSV
