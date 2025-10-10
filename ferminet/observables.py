@@ -29,7 +29,7 @@ import kfac_jax
 import functools
 import ml_collections
 import numpy as np
-from ferminet.utils.min_distance import min_image_distance_triclinic
+from ferminet.utils.min_distance import min_image_distance_triclinic, Lattice
 
 
 @chex.dataclass
@@ -515,6 +515,7 @@ def cal_pcf(
   dr = grids[1] - grids[0]
   bin_volume = 4 * jnp.pi / 3.0 * (grids[1:]**3 - grids[:-1]**3)
   init_state = jnp.zeros(nbins)
+  lat = Lattice(lattice_vectors)
 
 
   def pcf_estimator(
@@ -534,7 +535,7 @@ def cal_pcf(
       # Compute the distance vectors from the target species to all others
       rvec = jnp.concatenate([pos[:target_species, :], pos[target_species+1:, :]], axis=0) - pos[target_species, :]
       if apply_pbc:
-        _, rabs = min_image_distance_triclinic(rvec, lattice_vectors, radius=r_search)
+        _, rabs = min_image_distance_triclinic(rvec, lat, radius=r_search)
       else:
         rabs = jnp.linalg.norm(rvec, axis=-1)
       return rabs

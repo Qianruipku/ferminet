@@ -27,7 +27,7 @@ from ferminet import hamiltonian
 from ferminet import networks
 from ferminet import pseudopotential as pp
 from ferminet.utils import utils
-from ferminet.utils.min_distance import min_image_distance_triclinic
+from ferminet.utils.min_distance import min_image_distance_triclinic, Lattice
 import jax
 import jax.numpy as jnp
 
@@ -209,6 +209,7 @@ def local_energy(
 
   if lattice_vectors is None:
     lattice_vectors = jnp.eye(3)
+  lat = Lattice(lattice_vectors)
 
   nspins = jnp.asarray(nspins)
   particle_charges = jnp.asarray(particle_charges)
@@ -239,7 +240,7 @@ def local_energy(
     if use_pp:
       r_ae = jnp.reshape(data.positions, [-1, 1, ndim]) - data.atoms[None, ...]
       batch_min_dis = jax.vmap(min_image_distance_triclinic, in_axes=(0, None, None))
-      ae_min, r_ae_min = batch_min_dis(r_ae, lattice_vectors, r_search)
+      ae_min, r_ae_min = batch_min_dis(r_ae, lat, r_search)
       r_ae_min = r_ae_min[..., None]
       potential += + pp_local(r_ae_min) + pp_nonlocal(key, f, params, data, ae_min, r_ae_min)
     kinetic = ke(params, data)

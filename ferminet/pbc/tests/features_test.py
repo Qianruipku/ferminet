@@ -21,6 +21,7 @@ from ferminet.pbc import feature_layer as pbc_feature_layer
 import jax
 import jax.numpy as jnp
 import numpy as np
+from ferminet.utils import Lattice
 
 
 class FeatureLayerTest(parameterized.TestCase):
@@ -92,7 +93,7 @@ class FeatureLayerTest(parameterized.TestCase):
     # Test positions inside the box [0,1)^3 - should remain unchanged
     r_inside = jnp.array([[0.2, 0.3, 0.4],
                           [0.0, 0.5, 0.9]])
-    r_result = pbc_feature_layer.put_in_box(r_inside, lattice)
+    r_result = pbc_feature_layer.put_in_box(r_inside, Lattice(lattice))
     np.testing.assert_allclose(r_result, r_inside, atol=1e-6)
     
     # Test positions outside the box - should be wrapped back
@@ -100,7 +101,7 @@ class FeatureLayerTest(parameterized.TestCase):
                            [0.0, 2.5, 1.9]])    # y > 1, z > 1
     r_expected = jnp.array([[0.2, 0.3, 0.6],   # wrapped back
                             [0.0, 0.5, 0.9]])
-    r_result = pbc_feature_layer.put_in_box(r_outside, lattice)
+    r_result = pbc_feature_layer.put_in_box(r_outside, Lattice(lattice))
     np.testing.assert_allclose(r_result, r_expected, atol=1e-6)
 
   def test_put_in_box_flat_input(self):
@@ -112,7 +113,7 @@ class FeatureLayerTest(parameterized.TestCase):
     positions_flat = jnp.array([1.2, 0.3, -0.4, 0.0, 2.5, 1.9])
     expected_flat = jnp.array([0.2, 0.3, 0.6, 0.0, 0.5, 0.9])
     
-    result_flat = pbc_feature_layer.put_in_box(positions_flat.reshape(-1, 3), lattice)
+    result_flat = pbc_feature_layer.put_in_box(positions_flat.reshape(-1, 3), Lattice(lattice))
     np.testing.assert_allclose(result_flat.flatten(), expected_flat, atol=1e-6)
 
   def test_put_in_box_non_cubic_lattice(self):
@@ -124,7 +125,7 @@ class FeatureLayerTest(parameterized.TestCase):
     
     # Position outside the lattice cell
     r = jnp.array([[2.5, 4.0, -0.5]])  # Outside in all dimensions
-    r_result = pbc_feature_layer.put_in_box(r, lattice)
+    r_result = pbc_feature_layer.put_in_box(r, Lattice(lattice))
     
     # Expected: wrapped back into [0,2) x [0,3) x [0,1)
     r_expected = jnp.array([[0.5, 1.0, 0.5]])
@@ -143,8 +144,8 @@ class FeatureLayerTest(parameterized.TestCase):
     r_shifted = r_orig + lattice[:, 0] + 2 * lattice[:, 1] - lattice[:, 2]
     r_shifted = r_shifted.reshape(1, -1)
     
-    result_orig = pbc_feature_layer.put_in_box(r_orig, lattice)
-    result_shifted = pbc_feature_layer.put_in_box(r_shifted, lattice)
+    result_orig = pbc_feature_layer.put_in_box(r_orig, Lattice(lattice))
+    result_shifted = pbc_feature_layer.put_in_box(r_shifted, Lattice(lattice))
     
     np.testing.assert_allclose(result_orig, result_shifted, atol=1e-6)
 

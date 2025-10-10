@@ -35,7 +35,7 @@ from typing import Iterable, Tuple
 import numpy as np
 import jax.numpy as jnp
 import math
-from ferminet.utils.min_distance import min_image_distance_triclinic
+from ferminet.utils.min_distance import min_image_distance_triclinic, Lattice
 
 
 def parse_args():
@@ -159,6 +159,7 @@ def main():
     lattice_vec = jnp.array([[1.0, 0.0, 0.0],
                              [0.0, 1.0, 0.0],
                              [0.0, 0.0, 1.0]])
+    lat = Lattice(lattice_vec)
 
     files_read = []
     total_electrons_counted = 0
@@ -188,7 +189,7 @@ def main():
         else:
             disp = pos - ref_pos
         disp = jnp.reshape(disp, (-1, 3))
-        _, d = min_image_distance_triclinic(disp, lattice_vec, radius=1)
+        _, d = min_image_distance_triclinic(disp, lat, radius=1)
     # keep r <= rmax
         d = d[d <= rmax]
         hist, _ = jnp.histogram(d, bins=edges)

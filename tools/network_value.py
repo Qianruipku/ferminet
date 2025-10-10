@@ -157,6 +157,9 @@ def main_example():
     cfg = input_params()
     checkpoint_path = cfg.checkpoint_path 
     params, data = read_npz(checkpoint_path)
+    jnpdtype = jnp.array(0.).dtype
+    data.positions = data.positions.astype(jnpdtype)
+    data.atoms = data.atoms.astype(jnpdtype)
     
     # 2. Create configuration from parameters
     cfg = check_params(params, cfg)

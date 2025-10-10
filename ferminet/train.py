@@ -41,6 +41,7 @@ from ferminet.utils import system
 from ferminet.utils import utils
 from ferminet.utils import writers
 from ferminet.utils import check
+from ferminet.utils import Lattice
 import ferminet.pbc.hamiltonian as pbc_hamiltonian
 import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
@@ -362,6 +363,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   default_particle_charges = [
     1, 1, -1, -1, 1, 1, -1, -1, 1, 1
   ]
+  lat = Lattice(cfg.system.pbc.lattice_vectors) if cfg.system.pbc.apply_pbc else None
 
   # Check if particle masses and charges have been defined
   # If they have not been defined, use default ones
@@ -1033,7 +1035,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       if cfg.system.pbc.put_in_box:
         # Ensure electrons remain in the box
         data = data.replace(positions=pbc_feature_layer.put_in_box(
-            data.positions, cfg.system.pbc.lattice_vectors))
+            data.positions, lat))
       # due to pmean, loss, and pmove should be the same across
       # devices.
       loss = loss[0]
