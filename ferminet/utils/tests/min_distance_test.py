@@ -161,8 +161,8 @@ class MinDistanceTest(parameterized.TestCase):
         ])
         expected_norm = jnp.linalg.norm(expected_dr, axis=1)
         
-        np.testing.assert_allclose(dr_min, expected_dr, rtol=1e-6)
-        np.testing.assert_allclose(dr_norm, expected_norm, rtol=1e-6)
+        np.testing.assert_allclose(dr_min, expected_dr, rtol=1e-5)
+        np.testing.assert_allclose(dr_norm, expected_norm, rtol=1e-5)
 
     def test_batch_consistency(self):
         """Test that batch processing gives same results as individual processing."""

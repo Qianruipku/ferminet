@@ -24,7 +24,7 @@ from typing import Optional, Tuple
 import chex
 from ferminet import networks
 import jax.numpy as jnp
-from ferminet.utils import Lattice
+from ferminet.utils.min_distance import min_image_distance_triclinic, Lattice
 
 
 def periodic_norm(metric: jnp.ndarray, scaled_r: jnp.ndarray) -> jnp.ndarray:
@@ -58,6 +58,51 @@ def put_in_box(r: jnp.ndarray, lat: Lattice) -> jnp.ndarray:
   r_pbc = r_pbc.reshape(rshape)
   return r_pbc
 
+def construct_pbc_input_features(
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    lat: Lattice,
+    r_search: int = 0,
+    ndim: int = 3) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+  """Constructs input features for periodic systems.
+
+  Args:
+    pos: electron positions. Shape (nelectrons*ndim,).
+    atoms: atom positions. Shape (natoms, ndim).
+    lat: Lattice object defining the periodic boundaries.
+    ndim: dimension of system. Change only with caution.
+
+  Returns:
+    ae, ee, r_ae, r_ee tuple, where:
+      ae: atom-electron vector. Shape (nelectron, natom, ndim).
+      ee: atom-electron vector. Shape (nelectron, nelectron, ndim).
+      r_ae: atom-electron distance. Shape (nelectron, natom, 1).
+      r_ee: electron-electron distance. Shape (nelectron, nelectron, 1).
+    The diagonal terms in r_ee are masked out such that the gradients of these
+    terms are also zero.
+  """
+  assert atoms.shape[1] == ndim
+  ae = jnp.reshape(pos, [-1, 1, ndim]) - atoms[None, ...]
+  ee = jnp.reshape(pos, [1, -1, ndim]) - jnp.reshape(pos, [-1, 1, ndim])
+  na = atoms.shape[0]
+  n = ee.shape[0]
+
+  # Don't change ae temporarily
+  # ae, r_ae = min_image_distance_triclinic(ae.reshape(-1, 3), lat, r_search)
+  # ae = ae.reshape(n, na, 3)
+  _, r_ae = min_image_distance_triclinic(ae.reshape(-1, 3), lat, r_search)
+
+  r_ae = r_ae.reshape(n, na, 1)
+
+  # Don't change ee temporarily
+  # ee, _ = min_image_distance_triclinic(ee.reshape(-1, 3), lat, r_search)
+  # ee = ee.reshape(n, n, 3)
+  ee_tmp, _ = min_image_distance_triclinic(ee.reshape(-1, 3), lat, r_search)
+  ee_tmp = ee_tmp.reshape(n, n, 3)
+
+  r_ee = (
+      jnp.linalg.norm(ee_tmp + jnp.eye(n)[..., None], axis=-1) * (1.0 - jnp.eye(n)))
+  return ae, ee, r_ae, r_ee[..., None]
 
 def make_pbc_feature_layer(
     natoms: Optional[int] = None,

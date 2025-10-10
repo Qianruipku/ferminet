@@ -22,6 +22,7 @@ from ferminet import envelopes
 from ferminet import jastrows
 from ferminet import network_blocks
 from ferminet import networks
+from ferminet.utils import Lattice
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -332,6 +333,9 @@ def make_fermi_net(
     particle_charges: jnp.array = None,
     determinants: int = 16,
     states: int = 0,
+    apply_pbc: bool = False,
+    lat: Lattice = None,
+    r_search: int = 0,
     envelope: Optional[envelopes.Envelope] = None,
     feature_layer: Optional[networks.FeatureLayer] = None,
     jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.SIMPLE_EE,
@@ -417,7 +421,10 @@ def make_fermi_net(
       equivariant_layers=psiformer_layers,
       particle_masses=particle_masses,
       particle_charges=particle_charges,
-      ndim=ndim
+      ndim=ndim,
+      apply_pbc=apply_pbc,
+      lat=lat,
+      r_search=r_search
   )
 
   def network_init(key: chex.PRNGKey) -> networks.ParamTree:

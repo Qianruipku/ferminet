@@ -21,6 +21,7 @@ import chex
 from ferminet import envelopes
 from ferminet import jastrows
 from ferminet import network_blocks
+from ferminet.utils import Lattice
 import jax
 import jax.numpy as jnp
 from typing_extensions import Protocol
@@ -1067,6 +1068,9 @@ def make_orbitals(
     particle_masses: jnp.array,
     particle_charges: jnp.array,
     ndim: int,
+    apply_pbc: bool = False,
+    lat: Lattice = None,
+    r_search: int = 0
 ) -> ...:
   """Returns init, apply pair for orbitals.
 
@@ -1077,6 +1081,7 @@ def make_orbitals(
     equivariant_layers: Tuple of init, apply functions for the equivariant
       interaction part of the network.
   """
+  from ferminet.pbc.feature_layer import construct_pbc_input_features
 
   equivariant_layers_init, equivariant_layers_apply = equivariant_layers
 
@@ -1172,7 +1177,11 @@ def make_orbitals(
       columns under the exchange of inputs of shape (ndet, nalpha+nbeta,
       nalpha+nbeta) (or (ndet, nalpha, nalpha) and (ndet, nbeta, nbeta)).
     """
-    ae, ee, r_ae, r_ee = construct_input_features(pos, atoms, ndim=options.ndim)
+    if apply_pbc:
+      ae, ee, r_ae, r_ee = construct_pbc_input_features(
+          pos, atoms, lat, r_search, ndim=options.ndim)
+    else:
+      ae, ee, r_ae, r_ee = construct_input_features(pos, atoms, ndim=options.ndim)
     h_to_orbitals = equivariant_layers_apply(
         params['layers'],
         ae=ae,
@@ -1372,6 +1381,9 @@ def make_fermi_net(
     particle_charges: jnp.array = None,
     determinants: int = 16,
     states: int = 0,
+    apply_pbc: bool = False,
+    lat: Lattice = None,
+    r_search: int = 0,
     envelope: Optional[envelopes.Envelope] = None,
     feature_layer: Optional[FeatureLayer] = None,
     jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.NONE,
@@ -1484,7 +1496,10 @@ def make_fermi_net(
       equivariant_layers=equivariant_layers,
       particle_masses=particle_masses,
       particle_charges=particle_charges,
-      ndim=ndim
+      ndim=ndim,
+      apply_pbc=apply_pbc,
+      lat=lat,
+      r_search=r_search
   )
 
   def init(key: chex.PRNGKey) -> ParamTree:

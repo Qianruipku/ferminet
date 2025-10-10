@@ -39,7 +39,11 @@ def min_image_distance_cubic(r_ij : jnp.ndarray,
     lattice_inv = lat.lattice_inv
     lattice_vector = lat.lattice_vector
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    # Use a smooth trig-based wrapping to avoid relying on floor/rem
+    # primitives which may not be registered for higher-order AD in JAX.
+    # Map fractional coordinates into (-0.5, 0.5] via atan2(sin, cos).
+    angle = jnp.arctan2(jnp.sin(2 * jnp.pi * ds), jnp.cos(2 * jnp.pi * ds))
+    ds = angle / (2 * jnp.pi)
 
     dr_min = jnp.einsum('ij,kj->ik', ds, lattice_vector)
     dr_norm = jnp.linalg.norm(dr_min, axis=1)
@@ -69,7 +73,10 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
     
     # Convert to fractional coordinates and wrap to primary cell
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    # Use trig-based wrapping as above to avoid floor/rem primitives and
+    # provide smoother AD behaviour for gradients/Hessians.
+    angle = jnp.arctan2(jnp.sin(2 * jnp.pi * ds), jnp.cos(2 * jnp.pi * ds))
+    ds = angle / (2 * jnp.pi)
 
     # Generate all possible integer offsets
     rng = jnp.arange(-radius, radius+1)
@@ -83,12 +90,12 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
     dr_cand = jnp.einsum('ijk,lk->ijl', ds_cand, lattice_vector)
     
     # Find minimum distance candidates
-    d2 = jnp.sum(dr_cand**2, axis=2)
-    k = jnp.argmin(d2, axis=1)
-    
+    d = jnp.linalg.norm(dr_cand, axis=2)
+    k = jnp.argmin(d, axis=1)
+
     # Extract minimum displacement vectors and their norms
     dr_min = dr_cand[jnp.arange(r_ij.shape[0]), k]
-    dr_norm = jnp.sqrt(d2[jnp.arange(r_ij.shape[0]), k])
+    dr_norm = d[jnp.arange(r_ij.shape[0]), k]
 
     return dr_min, dr_norm
 
@@ -116,7 +123,10 @@ def find_neighbors_within_cutoff(r_ij : jnp.ndarray,
     
     # Convert to fractional coordinates and wrap to primary cell
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    # Use trig-based wrapping as above to avoid floor/rem primitives and
+    # provide smoother AD behaviour for gradients/Hessians.
+    angle = jnp.arctan2(jnp.sin(2 * jnp.pi * ds), jnp.cos(2 * jnp.pi * ds))
+    ds = angle / (2 * jnp.pi)
 
     # Generate all possible integer offsets
     rng = jnp.arange(-radius, radius+1)
