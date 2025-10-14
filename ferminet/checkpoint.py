@@ -263,22 +263,20 @@ def restore(restore_filename: str,
       data = networks.FermiNetData(**ckpt_data['data'].item())
       previous_batch_per_device = data.positions.shape[2]
       previous_total_batch = previous_total_devices * previous_batch_per_device
-      current_total_batch = host_batch_size * current_num_processes
-      if previous_total_batch < current_total_batch:
+      needed_total_batch = host_batch_size * current_num_processes
+      if previous_total_batch < needed_total_batch:
         logging.warning(
-            f'Batch size has increased from {previous_total_batch} to {current_total_batch} since checkpoint was saved.')
+            f'Batch size has increased from {previous_total_batch} to {needed_total_batch} since checkpoint was saved.')
         data = None
       else:
-        now_batch_per_device = current_total_batch // current_total_devices
-        needed_batch_per_device = host_batch_size // current_local_devices
-        if previous_total_devices != current_total_devices or \
-           previous_num_processes != current_num_processes or \
-           now_batch_per_device != previous_batch_per_device:
+        if previous_num_processes != current_num_processes or \
+           previous_local_devices != current_local_devices:
           data = jax.tree_util.tree_map(lambda x:
                                         x.reshape((current_num_processes, current_local_devices, -1) + x.shape[3:]),
                                         data)
         data = jax.tree_util.tree_map(lambda x: x[process], data)
-
+        now_batch_per_device = previous_total_batch // current_total_devices
+        needed_batch_per_device = host_batch_size // current_local_devices
         if (needed_batch_per_device < now_batch_per_device):
           logging.warning(
               f'Batch size per device (={now_batch_per_device}) in checkpoint is larger than requested batch size (={needed_batch_per_device}). '
