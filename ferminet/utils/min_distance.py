@@ -39,6 +39,9 @@ def min_image_distance_cubic(r_ij : jnp.ndarray,
     lattice_inv = lat.lattice_inv
     lattice_vector = lat.lattice_vector
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
+    # Smooth wrapping using trigonometric functions, helpful for auto-diff
+    # angle = jnp.arctan2(jnp.sin(2 * jnp.pi * ds), jnp.cos(2 * jnp.pi * ds))
+    # ds = angle / (2 * jnp.pi)
     ds = jnp.mod(ds + 0.5, 1) - 0.5
 
     dr_min = jnp.einsum('ij,kj->ik', ds, lattice_vector)
@@ -83,12 +86,12 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
     dr_cand = jnp.einsum('ijk,lk->ijl', ds_cand, lattice_vector)
     
     # Find minimum distance candidates
-    d2 = jnp.sum(dr_cand**2, axis=2)
-    k = jnp.argmin(d2, axis=1)
-    
+    d = jnp.linalg.norm(dr_cand, axis=2)
+    k = jnp.argmin(d, axis=1)
+
     # Extract minimum displacement vectors and their norms
     dr_min = dr_cand[jnp.arange(r_ij.shape[0]), k]
-    dr_norm = jnp.sqrt(d2[jnp.arange(r_ij.shape[0]), k])
+    dr_norm = d[jnp.arange(r_ij.shape[0]), k]
 
     return dr_min, dr_norm
 

@@ -21,6 +21,7 @@ import chex
 from ferminet import envelopes
 from ferminet import jastrows
 from ferminet import network_blocks
+from ferminet.utils import Lattice
 import jax
 import jax.numpy as jnp
 from typing_extensions import Protocol
@@ -1067,6 +1068,8 @@ def make_orbitals(
     particle_masses: jnp.array,
     particle_charges: jnp.array,
     ndim: int,
+    apply_pbc: bool = False,
+    lat: Lattice = None
 ) -> ...:
   """Returns init, apply pair for orbitals.
 
@@ -1077,7 +1080,7 @@ def make_orbitals(
     equivariant_layers: Tuple of init, apply functions for the equivariant
       interaction part of the network.
   """
-
+  from ferminet.pbc.feature_layer import periodic_norm
   equivariant_layers_init, equivariant_layers_apply = equivariant_layers
 
   # Optional Jastrow factor.
@@ -1237,6 +1240,12 @@ def make_orbitals(
     # Optionally apply Jastrow factor for electron cusp conditions.
     # Added pre-determinant for compatibility with pretraining.
     if jastrow_apply is not None:
+      if apply_pbc:
+        s_ee = jnp.einsum('il,jkl->jki', lat.lattice_inv, ee)
+        lattice_metric = lat.lattice_vector_T @ lat.lattice_vector
+        n = s_ee.shape[0]
+        s_ee += jnp.eye(n)[..., None]
+        r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
       jastrow = jnp.exp(
           jastrow_apply(r_ee, params['jastrow'], nspins) / sum(nspins)
       )
@@ -1372,6 +1381,8 @@ def make_fermi_net(
     particle_charges: jnp.array = None,
     determinants: int = 16,
     states: int = 0,
+    apply_pbc: bool = False,
+    lat: Lattice = None,
     envelope: Optional[envelopes.Envelope] = None,
     feature_layer: Optional[FeatureLayer] = None,
     jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.NONE,
@@ -1484,7 +1495,9 @@ def make_fermi_net(
       equivariant_layers=equivariant_layers,
       particle_masses=particle_masses,
       particle_charges=particle_charges,
-      ndim=ndim
+      ndim=ndim,
+      apply_pbc=apply_pbc,
+      lat=lat
   )
 
   def init(key: chex.PRNGKey) -> ParamTree:
