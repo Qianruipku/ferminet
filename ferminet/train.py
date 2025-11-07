@@ -677,7 +677,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         cfg.observables.apmd.ecut,
         cfg.observables.apmd.elements,
         cfg.system.pbc.apply_pbc,
-        cfg.system.pbc.lattice_vectors
+        cfg.system.pbc.lattice_vectors,
+        use_complex
       )
   
   # Initialisation done. We now want to have different PRNG streams on each
@@ -965,7 +966,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
     ptotal_energy = constants.pmap(evaluate_loss)
     initial_energy, _ = ptotal_energy(params, subkeys, data)
-    logging.info('Initial energy: %03.4f E_h', initial_energy[0])
+    logging.info('Initial energy: %03.4f E_h', jnp.real(initial_energy[0]))
 
   time_of_last_ckpt = time.time()
 
@@ -1042,7 +1043,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             data.positions, lat))
       # due to pmean, loss, and pmove should be the same across
       # devices.
-      loss = loss[0]
+      loss = jnp.real(loss[0])
       # per batch variance isn't informative. Use weighted mean and variance
       # instead.
       if not jnp.isnan(loss):

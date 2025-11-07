@@ -568,6 +568,7 @@ def cal_apmd(
     elements: int,
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
+    complex_output: bool,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, Observable]:
   """Evaluates the annihilating pair moment density.
 
@@ -617,9 +618,9 @@ def cal_apmd(
     rdiff = pos[:, :-1, :] - pos[:, -1:, :]
 
     batch_network = jax.vmap(signed_network, in_axes=(None, 0, 0, 0, 0), out_axes=(0, 0))
-    sign_psi, log_psi = batch_network(params, data.positions, data.spins, data.atoms, data.charges)
+    phase_psi, log_psi = batch_network(params, data.positions, data.spins, data.atoms, data.charges)
 
-    def loop_electron(j, val):
+    def loop_electron_real(j, val):
       # For electron j, create modified positions for all walkers
       # double positrons for electron j across all walkers
       pos_dpositron_j = pos.copy()  # [nwalker_per_device, n_particles, 3]
@@ -653,8 +654,45 @@ def cal_apmd(
       contribution = jnp.sum(contribution_per_walker, axis=0)  # [n_planewaves]
 
       return val + contribution
+    def loop_electron_complex(j, val):
+      # For electron j, create modified positions for all walkers
+      # double positrons for electron j across all walkers
+      pos_dpositron_j = pos.copy()  # [nwalker_per_device, n_particles, 3]
+      positron_coords = pos[:, -1, :]  # [nwalker_per_device, 3]
+      pos_dpositron_j = pos_dpositron_j.at[:, j, :].set(positron_coords)
 
-    state += constants.pmean(jax.lax.fori_loop(0, n_electrons, loop_electron, jnp.zeros((n_planewaves),))) / (n_electrons * nwalker_per_device)
+      # double electrons for electron j across all walkers  
+      pos_delectron_j = pos.copy()  # [nwalker_per_device, n_particles, 3]
+      electron_j_coords = pos[:, j, :]  # [nwalker_per_device, 3]
+      pos_delectron_j = pos_delectron_j.at[:, -1, :].set(electron_j_coords)
+
+      # Reshape for network input
+      pos_dpositron_flat = jnp.reshape(pos_dpositron_j, (nwalker_per_device, n_particles*3))
+      pos_delectron_flat = jnp.reshape(pos_delectron_j, (nwalker_per_device, n_particles*3))
+      
+      # Compute wave functions for all walkers with electron j modified
+      phase_psi_dpositron_j, log_psi_dpositron_j = batch_network(params, pos_dpositron_flat, data.spins, data.atoms, data.charges)
+      phase_psi_delectron_j, log_psi_delectron_j = batch_network(params, pos_delectron_flat, data.spins, data.atoms, data.charges)
+      
+      # Calculate factors for all walkers
+      psi_phase = phase_psi_dpositron_j + phase_psi_delectron_j - 2 * phase_psi
+      factor = jnp.exp(log_psi_dpositron_j + log_psi_delectron_j - log_psi*2) * jnp.exp(1.0j*psi_phase)
+      
+      rdiff_j = rdiff[:, j, :]  # [nwalker_per_device, 3]
+      # rdiff_j: [nwalker_per_device, 3], pwgrids: [n_planewaves, 3]
+      # Compute dot product to get [nwalker_per_device, n_planewaves] matrix
+      phase = jnp.dot(rdiff_j, pwgrids.T)  # [nwalker_per_device, n_planewaves]
+      
+      # Use matrix multiplication: cos(phase) * factor gives [nwalker_per_device, n_planewaves]
+      contribution_per_walker = jnp.exp(1.0j*phase) * factor[:, None]  # [nwalker_per_device, n_planewaves]
+      contribution = jnp.sum(jnp.real(contribution_per_walker), axis=0)  # [n_planewaves]
+
+      return val + contribution
+
+    if complex_output:
+      state += constants.pmean(jax.lax.fori_loop(0, n_electrons, loop_electron_complex, jnp.zeros((n_planewaves),))) / (n_electrons * nwalker_per_device)
+    else:
+      state += constants.pmean(jax.lax.fori_loop(0, n_electrons, loop_electron_real, jnp.zeros((n_planewaves),))) / (n_electrons * nwalker_per_device)
 
     return state
   return pwgrids, g_magnitudes, (init_state, apmd_estimator)
