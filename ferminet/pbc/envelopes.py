@@ -115,9 +115,9 @@ def make_kpoints(
   # Calculate required no. of k points
   if min_kpoints is None:
     min_kpoints = sum(spins)
-  elif min_kpoints < sum(spins):
-    raise ValueError(
-        'Number of kpoints must be equal or greater than number of electrons')
+  # elif min_kpoints < sum(spins):
+  #   raise ValueError(
+  #       'Number of kpoints must be equal or greater than number of electrons')
 
   dk = 1 + 1e-5
   # Generate ordinals of the lowest min_kpoints kpoints
