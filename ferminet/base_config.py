@@ -18,6 +18,7 @@ import enum
 
 import ml_collections
 from ml_collections import config_dict
+import jax.numpy as jnp
 
 
 class SystemType(enum.IntEnum):
@@ -179,6 +180,7 @@ def default() -> ml_collections.ConfigDict:
             # Search radius for nearest neighbors
             'r_search': 0,
             'put_in_box': False,
+            'twist_vectors': jnp.array([[0.0, 0.0, 0.0]]),  # (ntwist, ndim) array of twist vectors
           },
           # Units of *input* coords of atoms. Either 'bohr' or
           # 'angstrom'. Internally work in a.u.; positions in

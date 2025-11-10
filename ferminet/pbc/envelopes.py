@@ -28,7 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def make_multiwave_envelope(kpoints: jnp.ndarray) -> envelopes.Envelope:
+def make_multiwave_envelope(kpoints: jnp.ndarray, use_complex: bool) -> envelopes.Envelope:
   """Returns an oscillatory envelope.
 
   Envelope consists of a sum of truncated 3D Fourier series, one centered on
@@ -57,20 +57,27 @@ def make_multiwave_envelope(kpoints: jnp.ndarray) -> envelopes.Envelope:
     """See ferminet.envelopes.EnvelopeInit."""
     del natom, ndim  # unused
     params = []
-    nk = kpoints.shape[0]
+    nsigma = kpoints.shape[0]
+    if not use_complex:
+      nsigma *= 2
     for output_dim in output_dims:
-      params.append({'sigma': jnp.zeros((2 * nk, output_dim))})
+      params.append({'sigma': jnp.zeros((nsigma, output_dim))})
       params[-1]['sigma'] = params[-1]['sigma'].at[0, :].set(1.0)
     return params
 
   def apply(*, ae: jnp.ndarray, r_ae: jnp.ndarray, r_ee: jnp.ndarray,
+            twist_shift: jnp.ndarray, # (ndim,)
             sigma: jnp.ndarray) -> jnp.ndarray:
     """See ferminet.envelopes.EnvelopeApply."""
     del r_ae, r_ee  # unused
-    phase_coords = ae @ kpoints.T
-    waves = jnp.concatenate((jnp.cos(phase_coords), jnp.sin(phase_coords)),
+    phase_coords = ae @ (kpoints + twist_shift).T
+    if not use_complex:
+      waves = jnp.concatenate((jnp.cos(phase_coords), jnp.sin(phase_coords)),
                             axis=2)
-    env = waves @ (sigma**2.0)
+      env = waves @ (sigma**2.0)
+    else:
+      waves = jnp.exp(1.0j*phase_coords)
+      env = (waves.real @ (sigma ** 2.0)) + 1.0j * (waves.imag @ (sigma ** 2.0))
     return jnp.sum(env, axis=1)
 
   return envelopes.Envelope(envelopes.EnvelopeType.PRE_DETERMINANT, init, apply)

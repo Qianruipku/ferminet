@@ -434,6 +434,7 @@ def make_fermi_net(
       spins: jnp.ndarray,
       atoms: jnp.ndarray,
       charges: jnp.ndarray,
+      twist_vectors: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Forward evaluation of the Psiformer.
 
@@ -448,7 +449,7 @@ def make_fermi_net(
       Output of antisymmetric neural network in log space, i.e. a tuple of sign
       of and log absolute value of the network evaluated at x.
     """
-    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    orbitals = orbitals_apply(params, pos, spins, atoms, charges, twist_vectors)
     if options.states:
       batch_logdet_matmul = jax.vmap(network_blocks.logdet_matmul, in_axes=0)
       orbitals = [

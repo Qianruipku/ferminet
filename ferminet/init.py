@@ -26,12 +26,12 @@ from ferminet.utils import system
 
 
 def _assign_spin_configuration(
-    particles: int, batch_size: int = 1
+    particles: int, ntwist: int, batch_size: int = 1
 ) -> jnp.ndarray:
   """Returns the spin configuration for a fixed spin polarisation."""
   spin_values = [float(i) for i in range(len(particles))]
   spins = jnp.concatenate([jnp.full(count, value) for count, value in zip(particles, spin_values)])
-  return jnp.tile(spins[None], reps=(batch_size, 1))
+  return jnp.tile(spins[None], reps=(ntwist, batch_size, 1))
 
 
 def init_electrons(  # pylint: disable=dangerous-default-value
@@ -39,6 +39,7 @@ def init_electrons(  # pylint: disable=dangerous-default-value
     molecule: Sequence[system.Atom],
     electrons: Sequence[int],
     ndim: int,
+    ntwist: int,
     batch_size: int,
     init_width: float,
     core_electrons: Mapping[str, int] = {},
@@ -72,7 +73,7 @@ def init_electrons(  # pylint: disable=dangerous-default-value
   atomic_charges = jnp.array([atom.charge for atom in molecule])
   if len(atomic_charges) == 1:
     electron_positions = jnp.tile(jnp.asarray(molecule[0].coords), sum(electrons))
-    electron_positions = jnp.tile(electron_positions, (batch_size, 1))
+    electron_positions = jnp.tile(electron_positions, (ntwist*batch_size, 1))
   else:
     if sum(atomic_charges) == 0:
       raise ValueError("If there are no charged atoms, please add only one neutral atom")
@@ -80,9 +81,9 @@ def init_electrons(  # pylint: disable=dangerous-default-value
     atomic_positions = jnp.array([atom.coords for atom in molecule])
 
     key, subkey = jax.random.split(key)
-    inds = jax.random.choice(subkey, len(molecule), shape=(batch_size, sum(electrons)), p=atomic_charges)
+    inds = jax.random.choice(subkey, len(molecule), shape=(ntwist*batch_size, sum(electrons)), p=atomic_charges)
 
-    electron_positions = atomic_positions[inds].reshape(batch_size, sum(electrons) * ndim)
+    electron_positions = atomic_positions[inds].reshape(ntwist*batch_size, sum(electrons) * ndim)
 
   key, subkey = jax.random.split(key)
   electron_positions += (
@@ -91,7 +92,7 @@ def init_electrons(  # pylint: disable=dangerous-default-value
   )
 
   electron_spins = _assign_spin_configuration(
-      electrons, batch_size
+      electrons, ntwist, batch_size
   )
 
   return electron_positions, electron_spins
@@ -124,11 +125,13 @@ def init_mcmc_data(
   # make sure data on each host is initialized differently
   subkey = jax.random.fold_in(subkey, jax.process_index())
   # create electron state (position and spin)
+  ntwist = cfg.system.pbc.twist_vectors.shape[0]
   pos, spins = init_electrons(
       subkey,
       cfg.system.molecule,
       cfg.system.particles,
       cfg.system.ndim,
+      ntwist,
       batch_size=total_host_batch_size,
       init_width=cfg.mcmc.init_width,
       core_electrons=core_electrons,
@@ -136,12 +139,18 @@ def init_mcmc_data(
   # For excited states, each device has a batch of walkers, where each walker
   # is nstates * nelectrons. The vmap over nstates is handled in the function
   # created in make_total_ansatz
-  pos = jnp.reshape(pos, data_shape + (-1,))
+  pos = jnp.reshape(pos, (data_shape[0], ntwist*data_shape[1], -1))
   pos = kfac_jax.utils.broadcast_all_local_devices(pos)
-  spins = jnp.reshape(spins, data_shape + (-1,))
+  spins = jnp.reshape(spins, (data_shape[0], ntwist*data_shape[1], -1))
   spins = kfac_jax.utils.broadcast_all_local_devices(spins)
+  twist = jnp.tile(
+      cfg.system.pbc.twist_vectors[None, :, None, :],
+      (data_shape[0], 1, data_shape[1], 1)
+  )
+  twist = jnp.reshape(twist, (data_shape[0], ntwist*data_shape[1], -1))
+  twist = kfac_jax.utils.broadcast_all_local_devices(twist)
   data = networks.FermiNetData(
-      positions=pos, spins=spins, atoms=batch_atoms, charges=batch_charges
+      positions=pos, spins=spins, atoms=batch_atoms, charges=batch_charges, twist=twist
   )
   return key, data
 
@@ -189,6 +198,7 @@ def initialize_training_data_and_checkpoints(
   ckpt_restore_filename = (
       checkpoint.find_last_checkpoint(ckpt_save_path) or
       checkpoint.find_last_checkpoint(ckpt_restore_path))
+  ntwist = cfg.system.pbc.twist_vectors.shape[0]
 
   if ckpt_restore_filename:
     (t_init,
@@ -203,7 +213,7 @@ def initialize_training_data_and_checkpoints(
          ckpt_restore_filename,
          cfg.restart.load_opt_state,
          cfg.restart.load_data,
-         host_batch_size)
+         host_batch_size * ntwist)
     
     # If we didn't load MCMC data from checkpoint, initialize it fresh
     if not cfg.restart.load_data or data is None:

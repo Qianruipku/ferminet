@@ -152,6 +152,7 @@ def clip_local_values(
 
 def make_loss(network: networks.LogFermiNetLike,
               local_energy: hamiltonian.LocalEnergy,
+              ntwist: int,
               clip_local_energy: float = 0.0,
               clip_from_median: bool = True,
               center_at_clipped_energy: bool = True,
@@ -191,11 +192,11 @@ def make_loss(network: networks.LogFermiNetLike,
       in_axes=(
           None,
           0,
-          networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0),
+          networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0, twist=0),
       ),
       out_axes=(0, 0)
   )
-  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0), out_axes=0)
+  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
 
   @jax.custom_jvp
   def total_energy(
@@ -223,14 +224,18 @@ def make_loss(network: networks.LogFermiNetLike,
     keys = jax.random.split(key, num=data.positions.shape[0])
     e_l, e_l_mat = batch_local_energy(params, keys, data)
     loss = constants.pmean(jnp.mean(e_l))
-    loss_diff = e_l - loss
-    variance = constants.pmean(jnp.mean(loss_diff * jnp.conj(loss_diff)))
+    e_l_2 = e_l.reshape((ntwist, -1))
+    loss2 = constants.pmean(jnp.mean(e_l_2, axis=1))
+    loss2 = loss2.reshape((ntwist, 1))
+    loss_diff = e_l_2 - loss2
+    variance2 = constants.pmean(jnp.mean(jnp.real(loss_diff * jnp.conj(loss_diff)), axis=1))
+    variance2 = variance2.reshape((ntwist, 1))
     return loss, AuxiliaryLossData(
-        energy=loss,
-        variance=variance.real,
-        local_energy=e_l,
-        clipped_energy=e_l,
-        local_energy_mat=e_l_mat,
+        energy=loss2,                 # (ntwist, 1)
+        variance=variance2,           # (ntwist, 1)
+        local_energy=e_l_2,          # (ntwist, nbatch)
+        clipped_energy=e_l_2,        # (ntwist, nbatch)
+        local_energy_mat=e_l_mat,    
     )
 
   @total_energy.defjvp
@@ -238,17 +243,20 @@ def make_loss(network: networks.LogFermiNetLike,
     """Custom Jacobian-vector product for unbiased local energy gradients."""
     params, key, data = primals
     loss, aux_data = total_energy(params, key, data)
+    loss2 = aux_data.energy
 
     if clip_local_energy > 0.0:
-      aux_data.clipped_energy, diff = clip_local_values(
+      batch_clip_local_energy = jax.vmap(clip_local_values, in_axes=(0, 0, None, None, None, None), out_axes=(0,0))
+      aux_data.clipped_energy, diff = batch_clip_local_energy(
           aux_data.local_energy,
-          loss,
+          loss2,
           clip_local_energy,
           clip_from_median,
           center_at_clipped_energy,
           complex_output)
+      aux_data.clipped_energy = jnp.tile(aux_data.clipped_energy[:, None], (1, aux_data.local_energy.shape[1]))
     else:
-      diff = aux_data.local_energy - loss
+      diff = aux_data.local_energy - loss2 #dimension: (ntwist, nbatch)
 
     # Due to the simultaneous requirements of KFAC (calling convention must be
     # (params, rng, data)) and Laplacian calculation (only want to take
@@ -256,30 +264,35 @@ def make_loss(network: networks.LogFermiNetLike,
     # convention between total_energy and batch_network
     data = primals[2]
     data_tangents = tangents[2]
-    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges)
+    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges, data.twist)
     tangents = (
         tangents[0],
         data_tangents.positions,
         data_tangents.spins,
         data_tangents.atoms,
         data_tangents.charges,
+        data_tangents.twist,
     )
     psi_primal, psi_tangent = jax.jvp(batch_network, primals, tangents)
     if complex_output:
-      clipped_el = diff + aux_data.clipped_energy
+      
+      clipped_el2 = diff + aux_data.clipped_energy # dimension: (ntwist, nbatch)
+      clipped_el = clipped_el2.reshape((-1,)) # dimension: (ntwist*nbatch,)
+      clipped_energy = aux_data.clipped_energy.reshape((-1,)) # dimension: (ntwist*nbatch,)
       term1 = (jnp.dot(clipped_el, jnp.conjugate(psi_tangent)) +
                jnp.dot(jnp.conjugate(clipped_el), psi_tangent))
-      term2 = jnp.sum(aux_data.clipped_energy*psi_tangent.real)
+      term2 = jnp.sum(clipped_energy*psi_tangent.real)
       kfac_jax.register_normal_predictive_distribution(
           psi_primal.real[:, None])
       primals_out = loss.real, aux_data
-      device_batch_size = jnp.shape(aux_data.local_energy)[0]
-      tangents_out = ((term1 - 2*term2).real / device_batch_size, aux_data)
+      device_batch_size_ntwist = jnp.shape(aux_data.local_energy)[1] * ntwist
+      tangents_out = ((term1 - 2*term2).real / device_batch_size_ntwist, aux_data)
     else:
       kfac_jax.register_normal_predictive_distribution(psi_primal[:, None])
       primals_out = loss, aux_data
-      device_batch_size = jnp.shape(aux_data.local_energy)[0]
-      tangents_out = (jnp.dot(psi_tangent, diff) / device_batch_size, aux_data)
+      device_batch_size_ntwist = jnp.shape(aux_data.local_energy)[1] * ntwist
+      diff = diff.reshape((-1,))  # dimension: (ntwist*nbatch,)
+      tangents_out = (jnp.dot(psi_tangent, diff) / device_batch_size_ntwist, aux_data)
     return primals_out, tangents_out
 
   return total_energy
@@ -372,6 +385,7 @@ def make_wqmc_loss(
           spins=data.spins,
           atoms=data.atoms,
           charges=data.charges,
+          twist=data.twist
       )
       return batch_local_energy(params, keys, network_data)[0].sum()
 
@@ -404,19 +418,20 @@ def make_wqmc_loss(
     else:
       diff = aux_data.local_energy - loss
 
-    def log_q(params_, pos_, spins_, atoms_, charges_):
-      out = batch_network(params_, pos_, spins_, atoms_, charges_)
+    def log_q(params_, pos_, spins_, atoms_, charges_, twist_):
+      out = batch_network(params_, pos_, spins_, atoms_, charges_, twist_)
       kfac_jax.register_normal_predictive_distribution(out[:, None])
       return out.sum()
 
     score = jax.grad(log_q, argnums=1)
-    primals = (params, data.positions, data.spins, data.atoms, data.charges)
+    primals = (params, data.positions, data.spins, data.atoms, data.charges, data.twist)
     tangents = (
         tangents[0],
         tangents[2].positions,
         tangents[2].spins,
         tangents[2].atoms,
         tangents[2].charges,
+        tangents[2].twist,
     )
     score_primal, score_tangent = jax.jvp(score, primals, tangents)
 
@@ -484,10 +499,10 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
 
   vmap = jax.vmap if max_vmap_batch_size == 0 else functools.partial(
       folx.batched_vmap, max_batch_size=max_vmap_batch_size)
-  data_axes = networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0)
+  data_axes = networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0, twist=0)
   batch_local_energy = vmap(
       local_energy, in_axes=(None, 0, data_axes), out_axes=(0, 0))
-  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0), out_axes=0)
+  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
   overlap_weight = jnp.array(overlap_weight)
 
   # TODO(pfau): how much of this can be factored out with make_loss?
@@ -520,7 +535,8 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
                                       data.positions,
                                       data.spins,
                                       data.atoms,
-                                      data.charges)
+                                      data.charges,
+                                      data.twist)
     sign_psi_diag = jax.vmap(jnp.diag)(sign_psi)[..., None]
     log_psi_diag = jax.vmap(jnp.diag)(log_psi)[..., None]
     s_ij_local = sign_psi * sign_psi_diag * jnp.exp(log_psi - log_psi_diag)
@@ -589,9 +605,9 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
     # convention between total_energy and batch_network
     data = primals[2]
     data_tangents = tangents[2]
-    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges)
+    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges, data.twist)
     tangents = (tangents[0], data_tangents.positions, data_tangents.spins,
-                data_tangents.atoms, data_tangents.charges)
+                data_tangents.atoms, data_tangents.charges, data_tangents.twist)
 
     psi_primal, psi_tangent = jax.jvp(batch_network, primals, tangents)
     _, log_primal = psi_primal

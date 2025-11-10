@@ -167,7 +167,7 @@ def save(save_path: str,
     opt_state = synced_states['opt_state'] 
     mcmc_width = synced_states['mcmc_width']
   
-  data = multihost_utils.process_allgather(data) # shape (num_hosts, num_local_devices, batch_per_device, ...)
+  data = multihost_utils.process_allgather(data) # shape (num_hosts, num_local_devices*ntwist, batch_per_device, ...)
   sharded_key = multihost_utils.process_allgather(sharded_key) # shape (num_hosts, num_local_devices, 2)
   ckpt_filename = os.path.join(save_path, f'qmcjax_ckpt_{t:06d}.npz')
   if process == 0:
@@ -204,12 +204,12 @@ def save(save_path: str,
 def restore(restore_filename: str,
             load_opt_state: bool = True,
             load_data: bool = True,
-            host_batch_size: int = None):
+            host_batch_size_ntwist: int = None):
   """Restores data saved in a checkpoint.
 
   Args:
     restore_filename: filename containing checkpoint.
-    host_batch_size: batch size per host to be used.
+    host_batch_size_ntwist: batch size per host to be used times number of twist
 
   Returns:
     (t, data, params, opt_state, mcmc_width, density_state, sharded_key, weighted_stats) tuple, where
@@ -263,7 +263,7 @@ def restore(restore_filename: str,
       data = networks.FermiNetData(**ckpt_data['data'].item())
       previous_batch_per_device = data.positions.shape[2]
       previous_total_batch = previous_total_devices * previous_batch_per_device
-      needed_total_batch = host_batch_size * current_num_processes
+      needed_total_batch = host_batch_size_ntwist * current_num_processes
       if previous_total_batch < needed_total_batch:
         logging.warning(
             f'Batch size has increased from {previous_total_batch} to {needed_total_batch} since checkpoint was saved.')
@@ -276,7 +276,7 @@ def restore(restore_filename: str,
                                         data)
         data = jax.tree_util.tree_map(lambda x: x[process], data)
         now_batch_per_device = previous_total_batch // current_total_devices
-        needed_batch_per_device = host_batch_size // current_local_devices
+        needed_batch_per_device = host_batch_size_ntwist // current_local_devices
         if (needed_batch_per_device < now_batch_per_device):
           logging.warning(
               f'Batch size per device (={now_batch_per_device}) in checkpoint is larger than requested batch size (={needed_batch_per_device}). '

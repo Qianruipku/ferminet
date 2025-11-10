@@ -92,22 +92,22 @@ def make_pbc_feature_layer(
 
   def init() -> Tuple[Tuple[int, int], networks.Param]:
     if include_r_ae:
-      return (natoms * (2 * ndim + 1), 2 * ndim + 1), {}
+      return (natoms * (2 * ndim + 1) + 3, 2 * ndim + 1), {}
     else:
-      return (natoms * (2 * ndim), 2 * ndim + 1), {}
+      return (natoms * (2 * ndim) + 3, 2 * ndim + 1), {}
 
   def apply(ae, r_ae, ee, r_ee) -> Tuple[jnp.ndarray, jnp.ndarray]:
     # One e features in phase coordinates, (s_ae)_i = k_i . ae
-    s_ae = jnp.einsum('il,jkl->jki', reciprocal_vecs, ae)
+    s_ae = jnp.einsum('il,jkl->jki', reciprocal_vecs, ae) #dim (ne, na, 3)
     # Two e features in phase coordinates
-    s_ee = jnp.einsum('il,jkl->jki', reciprocal_vecs, ee)
+    s_ee = jnp.einsum('il,jkl->jki', reciprocal_vecs, ee) #dim (ne, ne, 3)
     # Periodized features
     ae = jnp.concatenate(
-        (jnp.sin(2 * jnp.pi * s_ae), jnp.cos(2 * jnp.pi * s_ae)), axis=-1)
+        (jnp.sin(2 * jnp.pi * s_ae), jnp.cos(2 * jnp.pi * s_ae)), axis=-1) #dim (ne, na, 6)
     ee = jnp.concatenate(
-        (jnp.sin(2 * jnp.pi * s_ee), jnp.cos(2 * jnp.pi * s_ee)), axis=-1)
+        (jnp.sin(2 * jnp.pi * s_ee), jnp.cos(2 * jnp.pi * s_ee)), axis=-1) #dim (ne, ne, 6)
     # Distance features defined on orthonormal projections
-    r_ae = periodic_norm(lattice_metric, s_ae)
+    r_ae = periodic_norm(lattice_metric, s_ae) #dim (ne, na)
     if rescale_inputs:
       r_ae = jnp.log(1 + r_ae)
     # Don't take gradients through |0|
@@ -116,10 +116,10 @@ def make_pbc_feature_layer(
     r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
 
     if include_r_ae:
-      ae_features = jnp.concatenate((r_ae[..., None], ae), axis=2)
+      ae_features = jnp.concatenate((r_ae[..., None], ae), axis=2) #dim (ne, na, 7)
     else:
-      ae_features = ae
-    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
+      ae_features = ae #dim (ne, na, 6)
+    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1]) #dim (ne, na*7) or (ne, na*6)
     ee_features = jnp.concatenate((r_ee[..., None], ee), axis=2)
     return ae_features, ee_features
 

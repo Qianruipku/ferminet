@@ -117,14 +117,14 @@ def local_kinetic_energy(
       eye = jnp.eye(n)
       grad_f = jax.grad(logabs_f, argnums=1)
       def grad_f_closure(x):
-        return grad_f(params, x, data.spins, data.atoms, data.charges)
+        return grad_f(params, x, data.spins, data.atoms, data.charges, data.twist)
 
       primal, dgrad_f = jax.linearize(grad_f_closure, data.positions)
 
       if complex_output:
         grad_phase = jax.grad(phase_f, argnums=1)
         def grad_phase_closure(x):
-          return grad_phase(params, x, data.spins, data.atoms, data.charges)
+          return grad_phase(params, x, data.spins, data.atoms, data.charges, data.twist)
         phase_primal, dgrad_phase = jax.linearize(
             grad_phase_closure, data.positions)
         hessian_diagonal = (
@@ -148,7 +148,7 @@ def local_kinetic_energy(
 
   elif laplacian_method == 'folx':
     def _lapl_over_f(params, data):
-      f_closure = lambda x: f(params, x, data.spins, data.atoms, data.charges)
+      f_closure = lambda x: f(params, x, data.spins, data.atoms, data.charges, data.twist)
       f_wrapped = folx.forward_laplacian(f_closure, sparsity_threshold=6)
       output = f_wrapped(data.positions, weights=(1/jnp.sqrt(particle_masses),))
       result = - (output[1].laplacian +

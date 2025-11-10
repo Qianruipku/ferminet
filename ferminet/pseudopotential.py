@@ -87,6 +87,7 @@ def project_legendre(
       data.spins,
       data.atoms,
       data.charges,
+      data.twist
   )
   if complex_output:
     f_ratio = jnp.exp((out_num[1] - out_denom[1])
@@ -139,7 +140,8 @@ def make_spherical_integral(quad_degree):
                          data.positions,
                          data.spins,
                          data.atoms,
-                         data.charges)
+                         data.charges,
+                         data.twist)
 
     def _body_fun(i, val):
       return val + weights[i] * project_legendre(

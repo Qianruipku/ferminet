@@ -345,11 +345,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   atoms = jnp.stack([jnp.array(atom.coords) for atom in cfg.system.molecule])
   charges = jnp.array([atom.charge for atom in cfg.system.molecule])
   nspins = cfg.system.particles
+  ntwist = cfg.system.pbc.twist_vectors.shape[0]
 
   # Generate atomic configurations for each walker
-  batch_atoms = jnp.tile(atoms[None, ...], [device_batch_size, 1, 1])
+  batch_atoms = jnp.tile(atoms[None, ...], [device_batch_size*ntwist, 1, 1])
   batch_atoms = kfac_jax.utils.replicate_all_local_devices(batch_atoms)
-  batch_charges = jnp.tile(charges[None, ...], [device_batch_size, 1])
+  batch_charges = jnp.tile(charges[None, ...], [device_batch_size*ntwist, 1])
   batch_charges = kfac_jax.utils.replicate_all_local_devices(batch_charges)
 
   # Define default values for particle masses and charges
@@ -444,7 +445,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         lattice=cfg.system.pbc.lattice_vectors,
         include_r_ae=include_r_ae
     )
-
+    
+  use_complex = cfg.network.get('complex', False)
   if cfg.network.make_envelope_fn:
     envelope_module, envelope_fn = (
         cfg.network.make_envelope_fn.rsplit('.', maxsplit=1))
@@ -459,9 +461,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       cfg.system.particles,
       cfg.system.pbc.min_kpoints
     )
-    envelope = pbc_envelopes.make_multiwave_envelope(kpoints)
+    envelope = pbc_envelopes.make_multiwave_envelope(kpoints, use_complex)
 
-  use_complex = cfg.network.get('complex', False)
   if cfg.network.network_type == 'ferminet':
     network = networks.make_fermi_net(
         nspins,
@@ -517,9 +518,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
                                      complex_output=use_complex), 1)
   else:
     logabs_network = lambda *args, **kwargs: signed_network(*args, **kwargs)[1]
-  batch_network = jax.vmap(
-      logabs_network, in_axes=(None, 0, 0, 0, 0), out_axes=0
-  )  # batched network
 
   # Exclusively when computing the gradient wrt the energy for complex
   # wavefunctions, it is necessary to have log(psi) rather than log(|psi|).
@@ -719,10 +717,11 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # Construct MCMC step
   atoms_to_mcmc = atoms if cfg.mcmc.scale_by_nuclear_distance else None
   mcmc_step = mcmc.make_mcmc_step(
-      batch_network,
+      logabs_network,
       device_batch_size,
       nspins=cfg.system.particles,
       ndim=cfg.system.ndim,
+      ntwist=ntwist,
       steps=cfg.mcmc.steps,
       atoms=atoms_to_mcmc,
       sample_all= cfg.mcmc.sample_all,
@@ -820,6 +819,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     evaluate_loss = qmc_loss_functions.make_loss(
         log_network if use_complex else logabs_network,
         local_energy,
+        ntwist,
         clip_local_energy=cfg.optim.clip_local_energy,
         clip_from_median=cfg.optim.clip_median,
         center_at_clipped_energy=cfg.optim.center_at_clip,
@@ -965,7 +965,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
     ptotal_energy = constants.pmap(evaluate_loss)
     initial_energy, _ = ptotal_energy(params, subkeys, data)
-    logging.info('Initial energy: %03.4f E_h', initial_energy[0])
+    logging.info('Initial energy: %03.4f E_h', jnp.real(initial_energy[0]))
 
   time_of_last_ckpt = time.time()
 
@@ -1168,6 +1168,14 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             writer_kwargs[key] = obs_data
             logging_str += ', <S^2>=%03.4f'
             logging_args += obs_data,
+        
+        twist_loss = aux_data.energy[0]
+        twist_variance = aux_data.variance[0]
+        # Format arrays with specific precision
+        energies_str = ', '.join([f'{x:.4f}' for x in jnp.real(twist_loss.flatten())])
+        variances_str = ', '.join([f'{x:.4f}' for x in twist_variance.flatten()])
+        logging.info('Twist energies: [%s], variances: [%s]', energies_str, variances_str)
+        
         logging.info(logging_str, *logging_args)
         writer.write(print_log, **writer_kwargs)
 

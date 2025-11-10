@@ -161,7 +161,7 @@ def mh_block_update(
     f: networks.LogFermiNetLike,
     data: networks.FermiNetData,
     key: chex.PRNGKey,
-    lp_1,
+    lp_all,
     num_accepts,
     stddev: jnp.ndarray,
     nspins: Tuple[int, ...],
@@ -196,50 +196,60 @@ def mh_block_update(
   Raises:
     NotImplementedError: if atoms is supplied.
   """
+  ii = i % blocks
   if atoms is not None:
     raise NotImplementedError("Asymmetric moves not implemented")
 
   key, subkey = jax.random.split(key)
-  batch_size = data.positions.shape[0]
   start_idx = 0
-  new_pos = data.positions
-  for species_idx, nspecies in enumerate(nspins):
-    species_width = stddev[species_idx]
-
-    x1 = new_pos[:, start_idx * ndim:(start_idx + nspecies) * ndim]
-    pad = (blocks - nspecies % blocks) % blocks
-    # reshape into blocks
-    x1 = jnp.reshape(
-        jnp.pad(x1, ((0, 0), (0, pad * ndim))),
-        [batch_size, blocks, -1, ndim],
-    )
-    ii = i % blocks
-    # update block ii
-    x2 = x1.at[:, ii].add(
-        species_width * jax.random.normal(subkey, shape=x1[:, ii].shape))
-    x2 = jnp.reshape(x2, [batch_size, -1])
-    # re-implant block into original array
-    if pad > 0:
-      x2 = x2[..., :-pad*ndim]
-    x2 = new_pos.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].set(x2)
-    x1 = new_pos
-    # log prob of proposal
-    lp_2 = 2.0 * f(params, x2, data.spins, data.atoms, data.charges)
+  lp_1 = lp_all[ii]
+  x_all = data.positions.reshape(blocks, -1, data.positions.shape[-1])
+  x1 = x_all[ii]
+  spins_all = data.spins.reshape(blocks, -1, data.spins.shape[-1])
+  spins = spins_all[ii]
+  atoms_all = data.atoms.reshape(blocks, -1, data.atoms.shape[-2], data.atoms.shape[-1])
+  atoms = atoms_all[ii]
+  charges_all = data.charges.reshape(blocks, -1, data.charges.shape[-1])
+  charges = charges_all[ii]
+  twist_all = data.twist.reshape(blocks, -1, data.twist.shape[-1])
+  twist = twist_all[ii]
+  if jnp.ndim(stddev) == 0:
+    x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
+    lp_2 = 2.0 * f(
+        params, x2, spins, atoms, charges, twist
+    )  # log prob of proposal
     ratio = lp_2 - lp_1
+    x_new, key, lp_new, num_accepts = mh_accept(
+        x1, x2, lp_1, lp_2, ratio, key, num_accepts, 0)
+  else:
+    for species_idx, nspecies in enumerate(nspins):
+      species_width = stddev[species_idx]
+      species_shape = (x1.shape[0], nspecies * ndim)
 
-    x1, key, lp_1, num_accepts = mh_accept(
-        x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx)
-    new_pos = x1
+      x2 = x1.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].add(
+          species_width *
+          jax.random.normal(subkey, shape=species_shape))  # proposal
+      lp_2 = 2. * f(params, x2, spins, atoms, charges, twist)  # log prob of proposal
+      ratio = lp_2 - lp_1
 
-    start_idx += nspecies
-  new_data = networks.FermiNetData(**(dict(data) | {'positions': new_pos}))
-  return new_data, key, lp_1, num_accepts
+      start_idx += nspecies
+      key, subkey = jax.random.split(key)
+      x1, key, lp_1, num_accepts = mh_accept(
+          x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx)
+    x_new = x1
+    lp_new = lp_1
+  x_all = x_all.at[ii].set(x_new)
+  lp_all = lp_all.at[ii].set(lp_new)
+  x_all = x_all.reshape(data.positions.shape)
+  new_data = networks.FermiNetData(**(dict(data) | {'positions': x_all}))
+  return new_data, key, lp_all, num_accepts
 
 
-def make_mcmc_step(batch_network,
+def make_mcmc_step(logabs_network,
                    batch_per_device,
                    nspins,
                    ndim,
+                   ntwist,
                    steps=10,
                    atoms=None,
                    sample_all=True,
@@ -247,7 +257,7 @@ def make_mcmc_step(batch_network,
   """Creates the MCMC step function.
 
   Args:
-    batch_network: function, signature (params, x), which evaluates the log of
+    logabs_network: function, signature (params, x), which evaluates the log of
       the wavefunction (square root of the log probability distribution) at x
       given params. Inputs and outputs are batched.
     batch_per_device: Batch size per device.
@@ -263,7 +273,9 @@ def make_mcmc_step(batch_network,
   Returns:
     Callable which performs the set of MCMC steps.
   """
-  inner_fun = mh_block_update if blocks > 1 else mh_update
+  inner_fun = mh_block_update
+
+  batch_network = jax.vmap(logabs_network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
 
   def mcmc_step(params, data, key, width):
     """Performs a set of MCMC steps.
@@ -289,14 +301,16 @@ def make_mcmc_step(batch_network,
           nspins=nspins,
           ndim=ndim,
           atoms=atoms,
-          blocks=blocks,
+          blocks=ntwist,
           i=i)
 
-    nsteps = steps * blocks
+    nsteps = steps * ntwist
     nspecies = len(nspins)
     logprob = 2.0 * batch_network(
-        params, pos, data.spins, data.atoms, data.charges
+        params, pos, data.spins, data.atoms, data.charges, data.twist
     )
+    logprob = logprob.reshape((ntwist, -1))
+
     if sample_all:
       new_data, key, _, num_accepts = lax.fori_loop(
           0, nsteps, step_fn, (data, key, logprob, 0.0))

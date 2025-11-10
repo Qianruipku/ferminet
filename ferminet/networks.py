@@ -68,6 +68,7 @@ class FermiNetData:
   spins: Any
   atoms: Any
   charges: Any
+  twist: Any
 
 
 ## Interfaces (public) ##
@@ -973,6 +974,7 @@ def make_fermi_net_layers(
       r_ee: jnp.ndarray,
       spins: jnp.ndarray,
       charges: jnp.ndarray,
+      twist_vector: jnp.ndarray,
   ) -> jnp.ndarray:
     """Applies the FermiNet interaction layers to a walker configuration.
 
@@ -1003,7 +1005,21 @@ def make_fermi_net_layers(
     else:
       h_elec_ion = None
 
-    h_one = ae_features  # single-electron features
+    # Add twist vector features to ae_features
+    # ae_features shape: (ne, na*4)
+    # twist_vector shape: (3,)
+    ne = ae_features.shape[0]  # number of electrons
+    # na = ae.shape[1]          # number of atoms
+    
+    # Calculate the magnitude of twist_vector and append it
+    # twist_magnitude = jnp.linalg.norm(twist_vector)
+    # twist_with_magnitude = jnp.concatenate([twist_vector, jnp.array([twist_magnitude])])  # shape: (4,)
+    
+    # Replicate twist vector for all electrons
+    twist_features = jnp.tile(twist_vector, (ne, 1))  # shape: (ne, 3)
+
+    # Concatenate ae_features with twist features
+    h_one = jnp.concatenate([ae_features, twist_features], axis=1)  # shape: (ne, ...+3)
 
     if options.separate_spin_channels:
       # Use the same stream for spin-parallel and spin-antiparallel electrons.
@@ -1160,6 +1176,7 @@ def make_orbitals(
       spins: jnp.ndarray,
       atoms: jnp.ndarray,
       charges: jnp.ndarray,
+      twist_vector: jnp.ndarray,
   ) -> Sequence[jnp.ndarray]:
     """Forward evaluation of the Fermionic Neural Network up to the orbitals.
 
@@ -1169,6 +1186,7 @@ def make_orbitals(
       spins: The electron spins, an N dimensional vector.
       atoms: Array with positions of atoms.
       charges: Array with atomic charges.
+      twist_vector: Array with twist vectors for each electron. dim(3)
 
     Returns:
       One matrix (two matrices if options.full_det is False) that exchange
@@ -1184,6 +1202,7 @@ def make_orbitals(
         r_ee=r_ee,
         spins=spins,
         charges=charges,
+        twist_vector=twist_vector,
     )
 
     if options.envelope.apply_type == envelopes.EnvelopeType.PRE_ORBITAL:
@@ -1222,6 +1241,7 @@ def make_orbitals(
             ae=ae_channels[i],
             r_ae=r_ae_channels[i],
             r_ee=r_ee_channels[i],
+            twist_shift=twist_vector,
             **params['envelope'][i],
         )
 
@@ -1510,6 +1530,7 @@ def make_fermi_net(
       spins: jnp.ndarray,
       atoms: jnp.ndarray,
       charges: jnp.ndarray,
+      twist_vectors: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Forward evaluation of the Fermionic Neural Network for a single datum.
 
@@ -1525,7 +1546,7 @@ def make_fermi_net(
       of and log absolute of the network evaluated at x.
     """
 
-    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    orbitals = orbitals_apply(params, pos, spins, atoms, charges, twist_vectors)
     if options.states:
       batch_logdet_matmul = jax.vmap(network_blocks.logdet_matmul, in_axes=0)
       orbitals = [
