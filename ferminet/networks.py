@@ -1236,9 +1236,12 @@ def make_orbitals(
       ae_channels = jnp.split(ae, active_spin_partitions, axis=0)
       r_ae_channels = jnp.split(r_ae, active_spin_partitions, axis=0)
       r_ee_channels = jnp.split(r_ee, active_spin_partitions, axis=0)
+      pos2 = pos.reshape((-1, options.ndim))
+      pos_channels = jnp.split(pos2, active_spin_partitions, axis=0)
       for i in range(len(active_spin_channels)):
         orbitals[i] = orbitals[i] * options.envelope.apply(
             ae=ae_channels[i],
+            pos=pos_channels[i],
             r_ae=r_ae_channels[i],
             r_ee=r_ee_channels[i],
             twist_shift=twist_vector,
