@@ -1,13 +1,15 @@
-from ferminet.utils.tetrahedron import tetra_integration
+from ferminet.utils.tetrahedron import tetra_integration, delaunay_tetrahedralization
 import jax.numpy as jnp
 import numpy as np
 import os
+import jax
 
 def cal_apmd_1d(
         crystal_direction: str,
         qz: jnp.ndarray,
         grid_points: jnp.ndarray,
         density: jnp.ndarray,
+        tetrahedra: jnp.ndarray,
 ):
     """Compute the APMD observable in 1D."""
     dirlist = []
@@ -27,6 +29,7 @@ def cal_apmd_1d(
         tmp = tetra_integration(
             grid_points=grid_points,
             values=density,
+            tetrahedra=tetrahedra,
             direction=direction,
             qz=qz,
         )
@@ -39,8 +42,8 @@ def write_apmd_1d(
         crystal_direction: str,
         ecut: float,
         dq: float,
-        grid_points: jnp.ndarray,
-        density: jnp.ndarray,
+        grid_points: jnp.ndarray, #(ntwist, npoints, 3)
+        density: jnp.ndarray, #(ntwist, npoints)
         ckpt_save_path: str,
 ):
     """Write the APMD observable in 1D to a file."""
@@ -48,12 +51,24 @@ def write_apmd_1d(
     apmd_file = open(os.path.join(ckpt_save_path, filename), 'w')
     qmax = jnp.sqrt(2.0 * ecut)
     qz = jnp.arange(0.0, qmax + dq, dq)
-    apmd_1d = cal_apmd_1d(
-        crystal_direction=crystal_direction,
-        qz=qz,
-        grid_points=grid_points,
-        density=density
+    
+    # Static tetrahedralization for all twists
+    tetrahedra, _ = delaunay_tetrahedralization(grid_points[0])
+    
+    batch_cal_apmd_1d = jax.vmap(
+        cal_apmd_1d, 
+        in_axes=(None, None, 0, 0, None),
+        out_axes=0
     )
+    
+    apmd_1d = batch_cal_apmd_1d(
+        crystal_direction,
+        qz,
+        grid_points,
+        density,
+        tetrahedra
+    )
+    apmd_1d = jnp.mean(apmd_1d, axis=0)  # average over twists
    
     apmd_data = jnp.array([qz, apmd_1d]).T
     np.savetxt(apmd_file, apmd_data, fmt='%.6f')

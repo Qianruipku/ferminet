@@ -282,6 +282,7 @@ def integrate_over_all_tetrahedra(
 def tetra_integration(
     grid_points: jnp.ndarray,
     values: jnp.ndarray,
+    tetrahedra: jnp.ndarray,
     direction: jnp.ndarray,
     qz: jnp.ndarray,
     batch_size: Optional[int] = None,
@@ -320,14 +321,7 @@ def tetra_integration(
             f"direction must be a 3D vector (shape: (3,)), got shape {direction.shape}"
         )
     
-    # Step 1: Perform Delaunay tetrahedralization
-    tetrahedra, _ = delaunay_tetrahedralization(
-        grid_points, 
-        incremental=incremental, 
-        qhull_options=qhull_options
-    )
-    
-    # Step 2: Compute intersection integrals
+    # Compute intersection integrals
     integrals = integrate_over_all_tetrahedra(
         grid_points=grid_points,
         values=values,

@@ -676,6 +676,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         cfg.observables.apmd.elements,
         cfg.system.pbc.apply_pbc,
         cfg.system.pbc.lattice_vectors,
+        ntwist,
         use_complex
       )
   
@@ -1082,25 +1083,29 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         observable_states['apmd'] = observable_data['apmd']
         freq = cfg.observables.apmd.save_freq
         if jax.process_index() == 0 and ((t+1) % freq == 0 or (t+1) == cfg.optim.iterations):
-          g_grids_np = np.array(g_grids)
-          pw_g_np = np.array(pw_g)
-          apmd_result_np = np.array(observable_data['apmd'][0] / (t + 1))
-          apmd_data = np.column_stack((g_grids_np, pw_g_np, apmd_result_np))
+          nplanewaves = pw_g.shape[0]
+          twist_v = jnp.tile(cfg.system.pbc.twist_vectors[:, None, :], (1, nplanewaves, 1)) #(ntwist, n_planewaves, 3)
+          g_grids = jnp.tile(g_grids[None, :, :], (ntwist, 1, 1)) #(ntwist, n_planewaves, 3)
+          g_grids = g_grids + twist_v #(ntwist, n_planewaves, 3)
+          pw_g = jnp.tile(pw_g[None, :, None], (ntwist, 1, 1))   #(ntwist, n_planewaves, 1)
+
+          apmd_result = observable_data['apmd'][0] / (t + 1)
+          apmd_result2= jnp.reshape(apmd_result, (ntwist, -1, 1))  # (ntwist, n_planewaves, 1)
+          apmd_data = jnp.concatenate((g_grids, pw_g, apmd_result2), axis=2)  # (ntwist, n_planewaves, 5)
+          apmd_data = np.array(apmd_data)
           if (t+1) % freq == 0:
-            name = 'apmd_' + str((t+1)//freq) + '.txt'
-            apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
-            np.savetxt(apmd_file, apmd_data, fmt='%.6f')
-            apmd_file.close()
+            name = 'apmd_' + str((t+1)//freq) + '.npy'
+            apmd_file_path = os.path.join(ckpt_save_path, name)
+            np.save(apmd_file_path, apmd_data)
           if (t+1) == cfg.optim.iterations:
-            name = 'apmd_final.txt'
-            apmd_file = open(os.path.join(ckpt_save_path, name), 'w')
-            np.savetxt(apmd_file, apmd_data, fmt='%.6f')
-            apmd_file.close()
+            name = 'apmd_final.npy'
+            apmd_file_path = os.path.join(ckpt_save_path, name)
+            np.save(apmd_file_path, apmd_data)
             write_apmd_1d(crystal_direction = cfg.observables.apmd.crystal_direction,
                           ecut=cfg.observables.apmd.ecut,
                           dq=cfg.observables.apmd.dq,
                           grid_points=g_grids,
-                          density=observable_data['apmd'][0]/ (t + 1),
+                          density=apmd_result,
                           ckpt_save_path=ckpt_save_path)
 
       # Update MCMC move width
