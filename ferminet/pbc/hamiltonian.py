@@ -238,11 +238,12 @@ def local_energy(
     )
     potential = potential_energy(data.positions, nspins)
     if use_pp:
-      r_ae = jnp.reshape(data.positions, [-1, 1, ndim]) - data.atoms[None, ...]
+      v_ae = jnp.reshape(data.positions, [-1, 1, ndim]) - data.atoms[None, ...] # v_e - v_a
       batch_min_dis = jax.vmap(min_image_distance_triclinic, in_axes=(0, None, None))
-      ae_min, r_ae_min = batch_min_dis(r_ae, lat, r_search)
+      v_ae_min, r_ae_min = batch_min_dis(v_ae, lat, r_search) # v_e - v_a'
+      pos_image =  v_ae - v_ae_min + data.atoms[None, ...]  # v_a' = (v_e - v_a) - (v_e - v_a') + v_a
       r_ae_min = r_ae_min[..., None]
-      potential += + pp_local(r_ae_min) + pp_nonlocal(key, f, params, data, ae_min, r_ae_min)
+      potential += + pp_local(r_ae_min) + pp_nonlocal(key, f, params, data, v_ae_min, r_ae_min, pos_image)
     kinetic = ke(params, data)
     return potential + kinetic, None
 

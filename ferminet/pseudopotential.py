@@ -288,7 +288,7 @@ def make_nonlocal_pseudopotential(charges, r_grid, v_grid_nonloc, ecp_mask,
       in_axes=(1, None, None, None, None, None, None, None, None, 0, None, 1))
 
   def electron_atom_nonlocal_pseudopotential(
-      key, signed_f, params, data, ae, r_ae):
+      key, signed_f, params, data, ae, r_ae, pos_image):
     """Evaluates electron-atom contribution to non-local pseudopotential.
 
     Args:
@@ -317,7 +317,8 @@ def make_nonlocal_pseudopotential(charges, r_grid, v_grid_nonloc, ecp_mask,
     r_ae_ecp_closest = r_ae_ecp[all_electrons, closest_atom]
     ae_ecp_closest = ae_ecp[all_electrons, closest_atom, :]
 
-    atoms_ecp_closest = data.atoms[ecp_mask][closest_atom]
+    pos_image_ecp = pos_image[:, ecp_mask, :]
+    atoms_ecp_closest = pos_image_ecp[all_electrons, closest_atom, :]
 
     v_grid_nonloc_closest = v_grid_nonloc[closest_atom]
 
