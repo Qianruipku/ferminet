@@ -152,7 +152,8 @@ def clip_local_values(
 
 def make_loss(network: networks.LogFermiNetLike,
               local_energy: hamiltonian.LocalEnergy,
-              ntwist: int,
+              twist_weights: jnp.ndarray,
+              nbatch_device: int,
               clip_local_energy: float = 0.0,
               clip_from_median: bool = True,
               center_at_clipped_energy: bool = True,
@@ -197,7 +198,8 @@ def make_loss(network: networks.LogFermiNetLike,
       out_axes=(0, 0)
   )
   batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
-
+  ntwist = twist_weights.shape[0]
+  twist_weights = jnp.tile(twist_weights[:, None],(1, nbatch_device)).reshape((-1,))  # (ntwist*nbatch,)
   @jax.custom_jvp
   def total_energy(
       params: networks.ParamTree,
@@ -223,7 +225,7 @@ def make_loss(network: networks.LogFermiNetLike,
     """
     keys = jax.random.split(key, num=data.positions.shape[0])
     e_l, e_l_mat = batch_local_energy(params, keys, data)
-    loss = constants.pmean(jnp.mean(e_l))
+    loss = constants.pmean(jnp.mean(e_l*twist_weights))
     e_l_2 = e_l.reshape((ntwist, -1))
     loss2 = constants.pmean(jnp.mean(e_l_2, axis=1))
     loss2 = loss2.reshape((ntwist, 1))
@@ -277,8 +279,8 @@ def make_loss(network: networks.LogFermiNetLike,
     if complex_output:
       
       clipped_el2 = diff + aux_data.clipped_energy # dimension: (ntwist, nbatch)
-      clipped_el = clipped_el2.reshape((-1,)) # dimension: (ntwist*nbatch,)
-      clipped_energy = aux_data.clipped_energy.reshape((-1,)) # dimension: (ntwist*nbatch,)
+      clipped_el = clipped_el2.reshape((-1,))*twist_weights # dimension: (ntwist*nbatch,)
+      clipped_energy = aux_data.clipped_energy.reshape((-1,))*twist_weights # dimension: (ntwist*nbatch,)
       term1 = (jnp.dot(clipped_el, jnp.conjugate(psi_tangent)) +
                jnp.dot(jnp.conjugate(clipped_el), psi_tangent))
       term2 = jnp.sum(clipped_energy*psi_tangent.real)
@@ -291,7 +293,7 @@ def make_loss(network: networks.LogFermiNetLike,
       kfac_jax.register_normal_predictive_distribution(psi_primal[:, None])
       primals_out = loss, aux_data
       device_batch_size_ntwist = jnp.shape(aux_data.local_energy)[1] * ntwist
-      diff = diff.reshape((-1,))  # dimension: (ntwist*nbatch,)
+      diff = diff.reshape((-1,))*twist_weights  # dimension: (ntwist*nbatch,)
       tangents_out = (jnp.dot(psi_tangent, diff) / device_batch_size_ntwist, aux_data)
     return primals_out, tangents_out
 

@@ -1,5 +1,6 @@
 import ml_collections
 from ferminet import base_config
+import jax.numpy as jnp
 
 def _get_similar_keys(key, key_list):
   """Find keys similar to the given key, focusing on likely typos."""
@@ -75,6 +76,20 @@ def _validate_config_keys(cfg, reference_cfg, path=""):
       if isinstance(cfg[key], ml_collections.ConfigDict) and isinstance(reference_cfg[key], ml_collections.ConfigDict):
         _validate_config_keys(cfg[key], reference_cfg[key], f"{path}.{key}" if path else key)
 
+def reset_config(cfg):
+  """Reset specific configuration parameters."""
+  # normalize twist_weights
+  if cfg.system.pbc.twist_weights.shape[0] != cfg.system.pbc.twist_vectors.shape[0]:
+    cfg.system.pbc.twist_weights = jnp.ones(cfg.system.pbc.twist_vectors.shape[0])
+
+  twist_weights = cfg.system.pbc.twist_weights
+  weight_sum = jnp.sum(twist_weights)
+  ntwist = twist_weights.shape[0]
+  if not jnp.isclose(weight_sum, ntwist):
+    normalized_weights = twist_weights * (ntwist / weight_sum)
+    cfg.system.pbc.twist_weights = normalized_weights
+  
+  return cfg
 
 def validate_config(cfg):
   """Validate that the configuration only contains valid keys from the base configuration.
@@ -90,3 +105,7 @@ def validate_config(cfg):
   
   # Validate the configuration
   _validate_config_keys(cfg, reference_cfg)
+
+  cfg = reset_config(cfg)
+
+  return cfg

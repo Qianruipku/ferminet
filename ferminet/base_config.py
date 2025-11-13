@@ -181,6 +181,7 @@ def default() -> ml_collections.ConfigDict:
             'r_search': 0,
             'put_in_box': False,
             'twist_vectors': jnp.array([[0.0, 0.0, 0.0]]),  # (ntwist, ndim) array of twist vectors
+            'twist_weights': jnp.array([1.0]),  # (ntwist) array of twist weights
           },
           # Units of *input* coords of atoms. Either 'bohr' or
           # 'angstrom'. Internally work in a.u.; positions in

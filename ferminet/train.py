@@ -320,7 +320,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     ValueError: if an illegal or unsupported value in cfg is detected.
   """
   # check cfg is valid
-  check.validate_config(cfg)
+  cfg = check.validate_config(cfg)
   # Device logging
   num_devices = jax.local_device_count()
   num_hosts = jax.device_count() // num_devices
@@ -821,7 +821,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     evaluate_loss = qmc_loss_functions.make_loss(
         log_network if use_complex else logabs_network,
         local_energy,
-        ntwist,
+        cfg.system.pbc.twist_weights,
+        device_batch_size,
         clip_local_energy=cfg.optim.clip_local_energy,
         clip_from_median=cfg.optim.clip_median,
         center_at_clipped_energy=cfg.optim.center_at_clip,
@@ -1090,6 +1091,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
           pw_g = jnp.tile(pw_g[None, :, None], (ntwist, 1, 1))   #(ntwist, n_planewaves, 1)
 
           apmd_result = observable_data['apmd'][0] / (t + 1)
+          twist_weights = jnp.tile(cfg.system.pbc.twist_weights[:, None], (1, nplanewaves))  #(ntwist, n_planewaves)
+          apmd_result *= twist_weights  #(ntwist*n_planewaves, )
           apmd_result2= jnp.reshape(apmd_result, (ntwist, -1, 1))  # (ntwist, n_planewaves, 1)
           apmd_data = jnp.concatenate((g_grids, pw_g, apmd_result2), axis=2)  # (ntwist, n_planewaves, 5)
           apmd_data = np.array(apmd_data)

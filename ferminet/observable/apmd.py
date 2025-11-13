@@ -49,8 +49,10 @@ def write_apmd_1d(
     """Write the APMD observable in 1D to a file."""
     filename = f'apmd_1d_{crystal_direction}.txt'
     apmd_file = open(os.path.join(ckpt_save_path, filename), 'w')
-    qmax = jnp.sqrt(2.0 * ecut)
-    qz = jnp.arange(0.0, qmax + dq, dq)
+    qmax = (jnp.sqrt(2.0 * ecut) + dq) // dq
+
+    qz_full = jnp.arange(-qmax, qmax, 1)
+    qz_full = qz_full * dq
     
     # Static tetrahedralization for all twists
     tetrahedra, _ = delaunay_tetrahedralization(grid_points[0])
@@ -61,14 +63,26 @@ def write_apmd_1d(
         out_axes=0
     )
     
-    apmd_1d = batch_cal_apmd_1d(
+    apmd_1d_full = batch_cal_apmd_1d(
         crystal_direction,
-        qz,
+        qz_full,
         grid_points,
         density,
         tetrahedra
     )
-    apmd_1d = jnp.mean(apmd_1d, axis=0)  # average over twists
+    apmd_1d_full = jnp.mean(apmd_1d_full, axis=0)  # average over twists
+    
+    # Symmetrize and take positive half
+    n_points = len(qz_full)
+    n_center = n_points // 2
+    qz = qz_full[n_center:]  # positive half including zero
+    
+    # Average symmetric points for positive q values
+    apmd_1d = jnp.zeros_like(qz)
+    apmd_1d = apmd_1d.at[0].set(apmd_1d_full[n_center])  # q=0 point
+    for i in range(1, len(qz)):
+        # Average positive and negative q values
+        apmd_1d = apmd_1d.at[i].set((apmd_1d_full[n_center + i] + apmd_1d_full[n_center - i]) / 2.0)
    
     apmd_data = jnp.array([qz, apmd_1d]).T
     np.savetxt(apmd_file, apmd_data, fmt='%.6f')
