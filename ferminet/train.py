@@ -668,7 +668,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     )
   
   if cfg.observables.apmd.calculate:
-    g_grids, pw_g, (observable_states['apmd'],
+    g_grids0, pw_g0, (observable_states['apmd'],
       observable_fns['apmd']) = observables.cal_apmd(
         signed_network,
         cfg.system.particles,
@@ -1084,11 +1084,11 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         observable_states['apmd'] = observable_data['apmd']
         freq = cfg.observables.apmd.save_freq
         if jax.process_index() == 0 and ((t+1) % freq == 0 or (t+1) == cfg.optim.iterations):
-          nplanewaves = pw_g.shape[0]
+          nplanewaves = pw_g0.shape[0]
           twist_v = jnp.tile(cfg.system.pbc.twist_vectors[:, None, :], (1, nplanewaves, 1)) #(ntwist, n_planewaves, 3)
-          g_grids = jnp.tile(g_grids[None, :, :], (ntwist, 1, 1)) #(ntwist, n_planewaves, 3)
+          g_grids = jnp.tile(g_grids0[None, :, :], (ntwist, 1, 1)) #(ntwist, n_planewaves, 3)
           g_grids = g_grids + twist_v #(ntwist, n_planewaves, 3)
-          pw_g = jnp.tile(pw_g[None, :, None], (ntwist, 1, 1))   #(ntwist, n_planewaves, 1)
+          pw_g = jnp.tile(pw_g0[None, :, None], (ntwist, 1, 1))   #(ntwist, n_planewaves, 1)
 
           apmd_result = observable_data['apmd'][0] / (t + 1)
           twist_weights = jnp.tile(cfg.system.pbc.twist_weights[:, None], (1, nplanewaves))  #(ntwist, n_planewaves)
