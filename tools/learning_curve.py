@@ -31,6 +31,8 @@ Examples:
                        help='Image resolution in DPI for raster formats (default: 300)')
     parser.add_argument('--figsize', nargs=2, type=float, default=[12, 8], metavar=('WIDTH', 'HEIGHT'),
                        help='Figure size: --figsize WIDTH HEIGHT (default: 12 8)')
+    parser.add_argument('--var', type=float, default=1000,
+                       help='Variance factor for auto Y-axis limits (default: 1000)')
     return parser.parse_args()
 
 args = parse_args()
@@ -38,7 +40,7 @@ file_path = args.file
 df = pd.read_csv(file_path)
 
 x_data = df.iloc[:, 0]
-y_data = df.iloc[:, 2]
+y_data = df.iloc[:, 1]
 var = pd.to_numeric(df.iloc[-1, 3], errors='coerce')
 last_y = y_data.iloc[-1]
 
@@ -50,7 +52,7 @@ plt.plot(x_data, y_data, linewidth=1.5, color='blue', alpha=0.8)
 if args.ylim is not None:
     ymin, ymax = args.ylim
 else:
-    ymin, ymax = last_y - 5 * abs(var), last_y + 5 * abs(var)
+    ymin, ymax = last_y - args.var * abs(var), last_y + args.var * abs(var)
 plt.ylim(ymin, ymax)
 print(f"Y-axis limits set to: {ymin} - {ymax}")
 
@@ -60,8 +62,8 @@ if args.xlim is not None:
     print(f"X-axis limits set to: {args.xlim[0]} - {args.xlim[1]}")
 
 plt.xlabel('Step', fontsize=14)
-plt.ylabel('EWMean', fontsize=14)
-plt.title('Training Statistics: Step vs EWMean', fontsize=16)
+plt.ylabel('Energy', fontsize=14)
+plt.title('Learning Curve', fontsize=16)
 
 plt.grid(True, alpha=0.3)
 
