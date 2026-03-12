@@ -47,7 +47,19 @@ def find_last_checkpoint(ckpt_path: Optional[str] = None) -> Optional[str]:
   if ckpt_path and os.path.exists(ckpt_path):
     files = [f for f in os.listdir(ckpt_path) if 'qmcjax_ckpt_' in f]
     # Handle case where last checkpoint is corrupt/empty.
-    for file in sorted(files, reverse=True):
+    # Sort by step number (extracted from filename) instead of lexicographic order
+    # This fixes a bug where lexicographic sorting would incorrectly order files:
+    # e.g., 'qmcjax_ckpt_900000.npz' > 'qmcjax_ckpt_1000000.npz' (wrong!)
+    # With numeric sorting: 1000000 > 900000 (correct!)
+    def extract_step(filename):
+      try:
+        # Extract step number from 'qmcjax_ckpt_XXXXXX.npz'
+        step_str = filename.split('_')[-1].split('.')[0]
+        return int(step_str)
+      except (ValueError, IndexError):
+        return -1  # Invalid files get lowest priority
+    
+    for file in sorted(files, key=extract_step, reverse=True):
       fname = os.path.join(ckpt_path, file)
       with open(fname, 'rb') as f:
         try:
