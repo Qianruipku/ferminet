@@ -265,6 +265,17 @@ def default() -> ml_collections.ConfigDict:
               # Use separate learnable parameters for pairs of spin-parallel and
               # spin-antiparallel electrons.
               'separate_spin_channels': False,
+              # Custom interaction pair groupings for multi-particle systems.
+              # If None, use default behavior based on number of species:
+              #   - 2 species: same-spin vs different-spin channels
+              #   - 3 species: same-particle, electron-spin, electron-positron channels  
+              #   - other: diagonal vs off-diagonal channels
+              # If provided, should be a tuple of tuples specifying which block indices
+              # belong to each interaction channel. Block indices are calculated as 
+              # block_idx = i * nspecies + j for species pair (i,j).
+              # Example for nspins=(4,4,1): ((0,4,8), (1,3), (2,6,5,7))
+              # creates 3 channels: same-particle, electron-spin, electron-positron.
+              'interaction_pairs': None,
               # SchNet-style convolutions for permutation-equivariant blocks in
               # FermiNet proposed by Gerard, Scherbela, Marquetand, Grohs,
               # arXiv:2205.09438 (NeurIPS 2022).
