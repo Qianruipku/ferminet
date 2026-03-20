@@ -262,6 +262,15 @@ def default() -> ml_collections.ConfigDict:
               # Use separate learnable parameters for pairs of spin-parallel and
               # spin-antiparallel electrons.
               'separate_spin_channels': False,
+              # Custom one-electron channel groupings for multi-particle
+              # systems. Each group is a tuple of species indices that share a
+              # single one-electron stream. Only used when
+              # separate_spin_channels is enabled. Otherwise the one-electron
+              # stream always uses a single shared channel.
+              # Example for nspins=(4,4,1): ((0, 1), (2,)) creates two single
+              # channels: one shared by both electron species and one for the
+              # positron species.
+              'single_particle_groups': None,
               # Custom interaction pair groupings for multi-particle systems.
               # If None, use default behavior based on number of species:
               #   - 2 species: same-spin vs different-spin channels

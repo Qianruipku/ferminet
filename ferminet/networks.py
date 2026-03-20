@@ -305,6 +305,11 @@ class FermiNetOptions(BaseNetworkOptions):
       units in the one-electron and two-electron stream in the corresponding
       layer of the FermiNet. The number of layers is given by the length of the
       tuple.
+    single_particle_groups: If set, use separate one-electron streams for the
+      specified particle/species groups. Each group is a tuple of species
+      indices. Only used when separate_spin_channels is True. When
+      separate_spin_channels is False, the one-electron stream always uses a
+      single shared channel.
     separate_spin_channels: If True, use separate two-electron streams for
       spin-parallel and spin-antiparallel  pairs of electrons. If False, use the
       same stream for all pairs of electrons.
@@ -326,6 +331,7 @@ class FermiNetOptions(BaseNetworkOptions):
   """
 
   hidden_dims: FermiLayers = ((256, 32), (256, 32), (256, 32), (256, 32))
+  single_particle_groups: Optional[Tuple[Tuple[int, ...], ...]] = None
   separate_spin_channels: bool = False
   interaction_pairs: Optional[Tuple[Tuple[int, ...], ...]] = None
   schnet_electron_electron_convolutions: Tuple[int, ...] = ()
@@ -371,6 +377,65 @@ def _default_interaction_pairs(nspins: Tuple[int, ...]) -> Tuple[Tuple[int, ...]
     raise ValueError(
         "interaction_pairs must be provided when nspecies != 2 or 3"
     )
+
+
+def _default_single_particle_groups(
+    nspins: Tuple[int, ...],
+) -> Tuple[Tuple[int, ...], ...]:
+  """Returns the default one-electron channel grouping."""
+  groups = []
+  leading_species = tuple(i for i in (0, 1) if i < len(nspins) and nspins[i] > 0)
+  if leading_species:
+    groups.append(leading_species)
+
+  for species_idx in range(2, len(nspins)):
+    if nspins[species_idx] > 0:
+      groups.append((species_idx,))
+
+  return tuple(groups)
+
+
+def _normalize_single_particle_groups(
+    nspins: Tuple[int, ...],
+    single_particle_groups: Optional[Tuple[Tuple[int, ...], ...]] = None,
+) -> Tuple[Tuple[int, ...], ...]:
+  """Validates and canonicalizes one-electron channel grouping."""
+  nspecies = len(nspins)
+  occupied_species = {i for i, nspin in enumerate(nspins) if nspin > 0}
+
+  if single_particle_groups is None:
+    return _default_single_particle_groups(nspins)
+
+  normalized_groups = []
+  seen = set()
+  for group in single_particle_groups:
+    normalized_group = []
+    for species_idx in group:
+      if not 0 <= species_idx < nspecies:
+        raise ValueError(
+            'single_particle_groups contains invalid species index '
+            f'{species_idx} for {nspecies} species.'
+        )
+      if nspins[species_idx] == 0:
+        continue
+      if species_idx in seen:
+        raise ValueError(
+            'single_particle_groups must partition occupied species exactly '
+            f'once, but species index {species_idx} is repeated.'
+        )
+      seen.add(species_idx)
+      normalized_group.append(species_idx)
+    if normalized_group:
+      normalized_groups.append(tuple(normalized_group))
+
+  if seen != occupied_species:
+    missing = tuple(sorted(occupied_species - seen))
+    raise ValueError(
+        'single_particle_groups must include every occupied species exactly '
+        f'once. Missing species indices: {missing}.'
+    )
+
+  return tuple(normalized_groups)
 
 
 def _valid_block(block_idx: int, nspins: Tuple[int, ...], nspecies: int) -> bool:
@@ -427,6 +492,68 @@ def _split_spin_pairs(
       channels.append(jnp.zeros((0,) + trailing_dims))
 
   return tuple(channels)
+
+
+def _split_single_particles(
+    arr: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    single_particle_groups: Optional[Tuple[Tuple[int, ...], ...]] = None,
+) -> Tuple[jnp.ndarray, ...]:
+  """Splits a one-electron array into species-group channels."""
+  single_particle_groups = _normalize_single_particle_groups(
+      nspins, single_particle_groups
+  )
+  blocks = jnp.split(arr, network_blocks.array_partitions(nspins), axis=0)
+  trailing_dims = arr.shape[1:]
+
+  channels = []
+  for species_group in single_particle_groups:
+    channel_blocks = [blocks[species_idx] for species_idx in species_group]
+    if channel_blocks:
+      channels.append(jnp.concatenate(channel_blocks, axis=0))
+    else:
+      channels.append(jnp.zeros((0,) + trailing_dims, dtype=arr.dtype))
+
+  return tuple(channels)
+
+
+def _combine_single_particles(
+    *channel_arrays: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    single_particle_groups: Optional[Tuple[Tuple[int, ...], ...]] = None,
+) -> jnp.ndarray:
+  """Combines one-electron channel arrays back into particle order."""
+  if len(channel_arrays) == 0:
+    raise ValueError('At least one channel array must be provided')
+
+  single_particle_groups = _normalize_single_particle_groups(
+      nspins, single_particle_groups
+  )
+  trailing_dims = channel_arrays[0].shape[1:]
+  dtype = channel_arrays[0].dtype
+
+  blocks = {}
+  for channel_array, species_group in zip(channel_arrays, single_particle_groups):
+    array_idx = 0
+    for species_idx in species_group:
+      block_size = nspins[species_idx]
+      blocks[species_idx] = channel_array[
+          array_idx:array_idx + block_size
+      ].reshape((block_size,) + trailing_dims)
+      array_idx += block_size
+
+  ordered_blocks = []
+  for species_idx, nspin in enumerate(nspins):
+    if nspin == 0:
+      continue
+    block = blocks.get(species_idx)
+    if block is None:
+      raise ValueError(f'Missing block for species index {species_idx}')
+    ordered_blocks.append(block)
+
+  if not ordered_blocks:
+    return jnp.zeros((0,) + trailing_dims, dtype=dtype)
+  return jnp.concatenate(ordered_blocks, axis=0)
 
 
 def _combine_spin_pairs(
@@ -743,6 +870,18 @@ def make_fermi_net_layers(
   Returns:
     Tuple of init, apply functions.
   """
+  if options.separate_spin_channels:
+    single_particle_groups = _normalize_single_particle_groups(
+        nspins, options.single_particle_groups
+    )
+  else:
+    single_particle_groups = None
+
+  def num_single_channels():
+    if options.separate_spin_channels:
+      return len(single_particle_groups)
+    return 1
+
   def num_double_channels():
     if options.separate_spin_channels:
       if options.interaction_pairs is not None:
@@ -753,6 +892,7 @@ def make_fermi_net_layers(
         return len(default_pairs)
     else:
       return 1
+  nsingle_channels = num_single_channels()
   ndouble_channels = num_double_channels()
 
   schnet_electron_init, schnet_electron_apply = make_schnet_convolution(
@@ -870,12 +1010,14 @@ def make_fermi_net_layers(
     for i in range(len(options.hidden_dims)):
       layer_params = {}
       # Calculate how many double keys we need based on actual channel configuration
-      num_keys_needed = 3 + ndouble_channels  # key, single_key, aux_key + double_keys
+      num_keys_needed = 2 + nsingle_channels + ndouble_channels
       keys = jax.random.split(key, num=num_keys_needed)
       key = keys[0]
-      single_key = keys[1]
+      single_keys = keys[1:1 + nsingle_channels]
+      double_key_start = 1 + nsingle_channels
+      double_key_end = double_key_start + ndouble_channels
+      double_keys = keys[double_key_start:double_key_end]
       aux_key = keys[-1]
-      double_keys = keys[2:-1]
 
       # Learned convolution on each layer.
       if options.schnet_electron_electron_convolutions:
@@ -905,12 +1047,17 @@ def make_fermi_net_layers(
 
       # Layer initialisation
       dims_one_out, dims_two_out = options.hidden_dims[i]
-      layer_params['single'] = network_blocks.init_linear_layer(
-          single_key,
-          in_dim=dims_one_in,
-          out_dim=dims_one_out,
-          include_bias=True,
-      )
+      layer_params['single'] = [
+          network_blocks.init_linear_layer(
+              single_key,
+              in_dim=dims_one_in,
+              out_dim=dims_one_out,
+              include_bias=True,
+          )
+          for single_key in single_keys
+      ]
+      if nsingle_channels == 1:
+        layer_params['single'] = layer_params['single'][0]
 
       if i < len(options.hidden_dims) - 1 or options.use_last_layer:
         layer_params['double'] = []
@@ -1019,9 +1166,25 @@ def make_fermi_net_layers(
     )
 
     # Execute next layer.
-    h_one_next = jnp.tanh(
+    if nsingle_channels == 1:
+      h_one_next = jnp.tanh(
         network_blocks.linear_layer(h_one_in, **params['single'])
-    )
+      )
+    else:
+      h_one_in_channels = _split_single_particles(
+        h_one_in,
+        nspins,
+        single_particle_groups=single_particle_groups,
+      )
+      h_one_next_channels = [
+        jnp.tanh(network_blocks.linear_layer(prev, **param))
+        for prev, param in zip(h_one_in_channels, params['single'])
+      ]
+      h_one_next = _combine_single_particles(
+        *h_one_next_channels,
+        nspins=nspins,
+        single_particle_groups=single_particle_groups,
+      )
     h_one = residual(h_one, h_one_next)
     # Only perform the auxiliary streams if parameters are present (ie not the
     # final layer of the network if use_last_layer is False).
@@ -1474,6 +1637,7 @@ def make_fermi_net(
     # FermiNet-specific kwargs below.
     hidden_dims: FermiLayers = ((256, 32), (256, 32), (256, 32)),
     use_last_layer: bool = False,
+    single_particle_groups: Optional[Tuple[Tuple[int, ...], ...]] = None,
     separate_spin_channels: bool = False,
     interaction_pairs: Optional[Tuple[Tuple[int, ...], ...]] = None,
     schnet_electron_electron_convolutions: Tuple[int, ...] = tuple(),
@@ -1506,6 +1670,10 @@ def make_fermi_net(
       are combined into permutation-equivariant features and passed into the
       final orbital-shaping layer. Otherwise, just the output of the
       one-electron stream is passed into the orbital-shaping layer.
+    single_particle_groups: Optional grouping of particle/species indices for
+      separate one-electron streams. Only used when
+      separate_spin_channels=True. If separate_spin_channels=False, the
+      one-electron stream always uses a single shared channel.
     separate_spin_channels: Use separate learnable parameters for pairs of
       spin-parallel and spin-antiparallel electrons.
     schnet_electron_electron_convolutions: Dimension of embeddings used for
@@ -1556,6 +1724,7 @@ def make_fermi_net(
       bias_orbitals=bias_orbitals,
       full_det=full_det,
       hidden_dims=hidden_dims,
+      single_particle_groups=single_particle_groups,
       separate_spin_channels=separate_spin_channels,
       interaction_pairs=interaction_pairs,
       schnet_electron_electron_convolutions=schnet_electron_electron_convolutions,
