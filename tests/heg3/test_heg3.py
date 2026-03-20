@@ -31,9 +31,9 @@ class HEGTest(absltest.TestCase, ReferenceTestMixin):
         
         # Set up basic HEG configuration
         self.cfg = base_config.default()
-        self.cfg.system.particles = (2, 2)
-        self.cfg.system.charges = (-1., -1.)
-        self.cfg.system.masses = (1., 1.)
+        self.cfg.system.particles = (2, 2, 1)
+        self.cfg.system.charges = (-1., -1., 1.)
+        self.cfg.system.masses = (1., 1., 1.)
         self.cfg.system.molecule = [system.Atom("X", (0., 0., 0.))]
         self.cfg.pretrain.method = None
         self.cfg.system.pbc.lattice_vectors = _sc_lattice_vecs(1.0, sum(self.cfg.system.particles))
