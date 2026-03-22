@@ -289,10 +289,9 @@ def default() -> ml_collections.ConfigDict:
               # (e-e) SchNet-style convolution layers (e-e only) proposed by
               # Gerard et al.  Note: unlike Gerard, we do not currently use
               # separate weights for same-spin and opposite spin interactions
-              # unless separate_spin_channels is enabled.  Must be either empty
-              # (don't use), or a tuple of embedding dimensions of length N
-              # (use_last_layer=False) or N+1 (use_last_layer=True), where N is
-              # the number of layers specified in hidden_dims.
+              # unless separate_spin_channels is enabled. Must be a tuple, whose
+              # length is no more than N (use_last_layer=False) or N+1 (use_last_layer=True),
+              # where N is the number of layers specified in hidden_dims.
               'schnet_electron_electron_convolutions': (),
               # Dimension of each layer of the electron-nuclear auxiliary
               # stream.  Must be same length as hidden_dims-1

@@ -25,6 +25,7 @@ from ferminet.utils import Lattice
 import jax
 import jax.numpy as jnp
 from typing_extensions import Protocol
+import logging
 
 
 FermiLayers = Tuple[Tuple[int, int], ...]
@@ -919,15 +920,11 @@ def make_fermi_net_layers(
   else:
     num_convolutions = len(options.hidden_dims)
   if (
-      options.schnet_electron_electron_convolutions
-      and len(options.schnet_electron_electron_convolutions) != num_convolutions
+      len(options.schnet_electron_electron_convolutions) > num_convolutions
   ):
-    raise ValueError(
-        'Inconsistent number of layers for convolution and '
-        'one- and two-electron streams. '
-        f'{len(options.schnet_electron_electron_convolutions)=}, '
-        f'expected {num_convolutions} layers.'
-    )
+    logging.warning(
+        'More SchNet electron-electron convolution dimensions provided than '
+        'number of layers. Extra dimensions will be ignored.')
   e_ion_options = (
       options.nuclear_embedding_dim,
       options.electron_nuclear_aux_dims,
@@ -1020,7 +1017,7 @@ def make_fermi_net_layers(
       aux_key = keys[-1]
 
       # Learned convolution on each layer.
-      if options.schnet_electron_electron_convolutions:
+      if i < len(options.schnet_electron_electron_convolutions):
         key, subkey = jax.random.split(key)
         layer_params['schnet'] = schnet_electron_init(
             subkey,
@@ -1090,7 +1087,7 @@ def make_fermi_net_layers(
     if options.use_last_layer:
       layers.append({})
       # Pass symmetric features to the orbital shaping layer.
-      if options.schnet_electron_electron_convolutions:
+      if options.schnet_electron_electron_convolutions and len(options.schnet_electron_electron_convolutions) == num_convolutions:
         key, subkey = jax.random.split(key)
         layers[-1]['schnet'] = schnet_electron_init(
             subkey,
@@ -1099,7 +1096,7 @@ def make_fermi_net_layers(
             embedding_dim=options.schnet_electron_electron_convolutions[-1],
         )
         dims_two_in = options.schnet_electron_electron_convolutions[-1]
-      if options.schnet_electron_nuclear_convolutions:
+      if len(options.schnet_electron_nuclear_convolutions) == num_convolutions:
         key, subkey = jax.random.split(key)
         layers[-1]['schnet_nuclear'] = schnet_electron_nuclear_init(
             subkey,
@@ -1123,8 +1120,9 @@ def make_fermi_net_layers(
       params: ParamTree,
       h_one: jnp.ndarray,
       h_two: Tuple[jnp.ndarray, ...],
+      schnet_ee_convolution: bool = True,
   ) -> jnp.ndarray:
-    if options.schnet_electron_electron_convolutions:
+    if schnet_ee_convolution:
       # SchNet-style embedding: convolve embeddings of one- and two-electron
       # streams.
       h_two_embedding = schnet_electron_apply(params['schnet'], h_one, h_two)
@@ -1143,6 +1141,7 @@ def make_fermi_net_layers(
       params: Mapping[str, ParamTree],
       h_one: jnp.ndarray,
       h_two: Tuple[jnp.ndarray, ...],
+      schnet_ee_convolution: bool,
       h_elec_ion: Optional[jnp.ndarray],
       nuclear_embedding: Optional[jnp.ndarray],
   ) -> Tuple[jnp.ndarray, Tuple[jnp.ndarray, ...], Optional[jnp.ndarray]]:
@@ -1154,7 +1153,7 @@ def make_fermi_net_layers(
     residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y
 
     # Permutation-equivariant block.
-    h_two_embedding = electron_electron_convolution(params, h_one, h_two)
+    h_two_embedding = electron_electron_convolution(params, h_one, h_two, schnet_ee_convolution)
     if options.schnet_electron_nuclear_convolutions:
       h_aux = schnet_electron_nuclear_apply(
           params['schnet_nuclear'], h_elec_ion, nuclear_embedding
@@ -1275,13 +1274,15 @@ def make_fermi_net_layers(
           params['streams'][i],
           h_one,
           h_two,
+          i < len(options.schnet_electron_electron_convolutions),
           h_elec_ion,
           nuclear_embedding,
       )
 
     if options.use_last_layer:
       last_layer = params['streams'][-1]
-      h_two_embedding = electron_electron_convolution(last_layer, h_one, h_two)
+      h_two_embedding = electron_electron_convolution(last_layer, h_one, h_two,
+                                                      len(options.schnet_electron_electron_convolutions) == num_convolutions)
       if options.schnet_electron_nuclear_convolutions:
         h_aux = schnet_electron_nuclear_apply(
             last_layer['schnet_nuclear'], h_elec_ion, nuclear_embedding
