@@ -39,6 +39,7 @@ class HEGTest(absltest.TestCase, ReferenceTestMixin):
         self.cfg.system.pbc.lattice_vectors = _sc_lattice_vecs(1.0, sum(self.cfg.system.particles))
         self.cfg.system.pbc.apply_pbc = True
         self.cfg.network.full_det = True
+        self.cfg.system.pbc.min_kpoints = 1
 
         # Small network for fast testing
         self.cfg.network.ferminet.hidden_dims = ((16, 4),) * 2

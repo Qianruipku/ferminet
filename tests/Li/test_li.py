@@ -73,6 +73,7 @@ class HeAtomTest(absltest.TestCase, ReferenceTestMixin):
 
         self.cfg.system.pbc.apply_pbc = True
         self.cfg.network.full_det = False
+        self.cfg.system.pbc.min_kpoints = 1
 
         # Small network for fast testing
         self.cfg.network.ferminet.hidden_dims = ((16, 4),) * 1
