@@ -443,7 +443,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         ndim=cfg.system.ndim,
         rescale_inputs=cfg.network.get('rescale_inputs', False),
         lattice=cfg.system.pbc.lattice_vectors,
-        include_r_ae=include_r_ae
+        include_r_ae=include_r_ae,
+        feature_order1=cfg.system.pbc.get('feature_order1', 1),
+        feature_order2=cfg.system.pbc.get('feature_order2', 1),
     )
     
   use_complex = cfg.network.get('complex', False)

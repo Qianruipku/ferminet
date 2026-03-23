@@ -60,12 +60,14 @@ def put_in_box(r: jnp.ndarray, lat: Lattice) -> jnp.ndarray:
 
 
 def make_pbc_feature_layer(
-    natoms: Optional[int] = None,
-    nspins: Optional[Tuple[int, ...]] = None,
-    ndim: int = 3,
-    rescale_inputs: bool = False,
-    lattice: Optional[jnp.ndarray] = None,
-    include_r_ae: bool = True,
+  natoms: Optional[int] = None,
+  nspins: Optional[Tuple[int, ...]] = None,
+  ndim: int = 3,
+  rescale_inputs: bool = False,
+  lattice: jnp.ndarray = jnp.eye(3),
+  include_r_ae: bool = True,
+  feature_order1: int = 1,
+  feature_order2: int = 1,
 ) -> networks.FeatureLayer:
   """Returns the init and apply functions for periodic features.
 
@@ -83,18 +85,17 @@ def make_pbc_feature_layer(
 
   del nspins
 
-  if lattice is None:
-    lattice = jnp.eye(ndim)
-
   # Calculate reciprocal vectors, factor 2pi omitted
   reciprocal_vecs = jnp.linalg.inv(lattice)
   lattice_metric = lattice.T @ lattice
 
   def init() -> Tuple[Tuple[int, int], networks.Param]:
+    ae_feat_dim = feature_order1 * 2 * ndim
+    ee_feat_dim = feature_order2 * 2 * ndim
     if include_r_ae:
-      return (natoms * (2 * ndim + 1) + 3, 2 * ndim + 1), {}
+      return (natoms * (ae_feat_dim + 1) + 3, ee_feat_dim + 1), {}
     else:
-      return (natoms * (2 * ndim) + 3, 2 * ndim + 1), {}
+      return (natoms * (ae_feat_dim) + 3, ee_feat_dim + 1), {}
 
   def apply(ae, r_ae, ee, r_ee) -> Tuple[jnp.ndarray, jnp.ndarray]:
     # One e features in phase coordinates, (s_ae)_i = k_i . ae
@@ -102,10 +103,16 @@ def make_pbc_feature_layer(
     # Two e features in phase coordinates
     s_ee = jnp.einsum('il,jkl->jki', reciprocal_vecs, ee) #dim (ne, ne, 3)
     # Periodized features
-    ae = jnp.concatenate(
-        (jnp.sin(2 * jnp.pi * s_ae), jnp.cos(2 * jnp.pi * s_ae)), axis=-1) #dim (ne, na, 6)
-    ee = jnp.concatenate(
-        (jnp.sin(2 * jnp.pi * s_ee), jnp.cos(2 * jnp.pi * s_ee)), axis=-1) #dim (ne, ne, 6)
+    ae_feats = []
+    for order in range(1, feature_order1 + 1):
+      ae_feats.append(jnp.sin(order * 2 * jnp.pi * s_ae))
+      ae_feats.append(jnp.cos(order * 2 * jnp.pi * s_ae))
+    ae = jnp.concatenate(ae_feats, axis=-1)
+    ee_feats = []
+    for order in range(1, feature_order2 + 1):
+      ee_feats.append(jnp.sin(order * 2 * jnp.pi * s_ee))
+      ee_feats.append(jnp.cos(order * 2 * jnp.pi * s_ee))
+    ee = jnp.concatenate(ee_feats, axis=-1)
     # Distance features defined on orthonormal projections
     r_ae = periodic_norm(lattice_metric, s_ae) #dim (ne, na)
     if rescale_inputs:
