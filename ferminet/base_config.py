@@ -171,6 +171,10 @@ def default() -> ml_collections.ConfigDict:
             'apply_pbc': False,
             # Array of shape (ndim, ndim) with the lattice vectors of the simulation cell
             'lattice_vectors': None,
+            # Order of features for the electron-nuclear distances
+            'feature_order1': 1,
+            # Order of features for the electron-electron distances
+            'feature_order2': 1,
             # Number cells to use in the Ewald summation on each direction
             'convergence_radius': 5,
             # Minimum number of k-points in the envelope.
