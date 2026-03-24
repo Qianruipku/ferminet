@@ -51,15 +51,29 @@ def make_multiwave_envelope(kpoints: jnp.ndarray) -> envelopes.Envelope:
     envelopes.EnvelopeType.PRE_DETERMINANT
   """
 
+  # keep only half of the kpoints, since the other half are redundant due to symmetry
+  # remove Gamma point
+  def keep_half_kpoints(kpts):
+    eps = 1e-8
+    mask = (
+        (kpts[:, 0] > eps) |
+        ((jnp.abs(kpts[:, 0]) <= eps) & (kpts[:, 1] > eps)) |
+        ((jnp.abs(kpts[:, 0]) <= eps) & (jnp.abs(kpts[:, 1]) <= eps) & (kpts[:, 2] >= eps))
+    )
+    return kpts[mask]
+
+  kpoints = keep_half_kpoints(kpoints)
+
   def init(
       natom: int, output_dims: Sequence[int], ndim: int = 3
   ) -> Sequence[Mapping[str, jnp.ndarray]]:
     """See ferminet.envelopes.EnvelopeInit."""
     del natom, ndim  # unused
     params = []
-    nk = kpoints.shape[0]
+    nk_nonzero = kpoints.shape[0]
     for output_dim in output_dims:
-      params.append({'sigma': jnp.zeros((2 * nk, output_dim))})
+      sigma_init = jnp.zeros((2 * nk_nonzero + 1, output_dim))
+      params.append({'sigma': sigma_init})
       params[-1]['sigma'] = params[-1]['sigma'].at[0, :].set(1.0)
     return params
 
@@ -67,11 +81,15 @@ def make_multiwave_envelope(kpoints: jnp.ndarray) -> envelopes.Envelope:
             sigma: jnp.ndarray) -> jnp.ndarray:
     """See ferminet.envelopes.EnvelopeApply."""
     del r_ae, r_ee  # unused
-    phase_coords = ae @ kpoints.T
-    waves = jnp.concatenate((jnp.cos(phase_coords), jnp.sin(phase_coords)),
+    nk_nonzero = kpoints.shape[0]
+    if nk_nonzero == 0:
+      return sigma**2
+    else:
+      phase_coords = ae @ kpoints.T
+      waves = jnp.concatenate((jnp.cos(phase_coords), jnp.sin(phase_coords)),
                             axis=2)
-    env = waves @ (sigma**2.0)
-    return jnp.sum(env, axis=1)
+      env = waves @ sigma[1:, :]
+    return 0.01*jnp.mean(env, axis=1) + sigma[0, :]**2
 
   return envelopes.Envelope(envelopes.EnvelopeType.PRE_DETERMINANT, init, apply)
 
