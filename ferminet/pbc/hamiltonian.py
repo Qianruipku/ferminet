@@ -38,6 +38,7 @@ def make_ewald_potential_3d(
     atom_charges: jnp.ndarray,
     particle_charges: jnp.ndarray,
     truncation_limit: int = 5,
+    is_heg: bool = False,
 ) -> Callable[[jnp.ndarray, jnp.ndarray], float]:
   """Creates a function to evaluate infinite Coulomb sum for periodic lattice.
 
@@ -50,8 +51,7 @@ def make_ewald_potential_3d(
       to primitive cell which are summed over in evaluation of Ewald sum.
       Must be large enough to achieve convergence for the real and reciprocal
       space sums.
-    include_heg_background: bool. When True, includes cell-neutralizing
-      background term for homogeneous electron gas.
+    is_heg: bool. When True, treats the system as a homogeneous electron gas.
 
   Returns:
     Callable with signature f(ae, ee), where (ae, ee) are atom-electon and
@@ -112,8 +112,12 @@ def make_ewald_potential_3d(
     positions = jnp.einsum('il,jl->ji', lattice, phase_particles)
 
     # Treat all particles equally, perform the Ewald sum symmetrically
-    all_positions = jnp.concatenate([atoms, positions])
-    all_charges = jnp.concatenate([atom_charges, jnp.repeat(particle_charges, nspins)])
+    if is_heg:
+      all_positions = positions
+      all_charges = jnp.repeat(particle_charges, nspins)
+    else:
+      all_positions = jnp.concatenate([atoms, positions])
+      all_charges = jnp.concatenate([atom_charges, jnp.repeat(particle_charges, nspins)])
 
     diff_pos = all_positions[:, None, ...] - all_positions[None, :, ...]
     charge_prod = all_charges[:, None] * all_charges[None, :]
@@ -222,6 +226,7 @@ def local_energy(
                                         complex_output=complex_output,
                                         laplacian_method=laplacian_method,
                                         ndim=ndim)
+  is_heg = jnp.all(charges == 0)
 
   def _e_l(
       params: networks.ParamTree, key: chex.PRNGKey, data: networks.FermiNetData
@@ -234,7 +239,7 @@ def local_energy(
       data: MCMC configuration.
     """
     potential_energy = ewald_function(
-        lattice_vectors, data.atoms, effective_charges, particle_charges, convergence_radius
+        lattice_vectors, data.atoms, effective_charges, particle_charges, convergence_radius, is_heg
     )
     potential = potential_energy(data.positions, nspins)
     if use_pp:
