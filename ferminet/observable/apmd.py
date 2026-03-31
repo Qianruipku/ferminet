@@ -19,6 +19,9 @@ def cal_apmd_1d(
     elif crystal_direction == '111':
         dirlist = [jnp.array([1.0, 1.0, 1.0]), jnp.array([-1.0, 1.0, 1.0]), jnp.array([1.0, -1.0, 1.0]),
                    jnp.array([1.0, 1.0, -1.0])]
+    elif crystal_direction == '-12-10':
+        st = jnp.sqrt(3.0)
+        dirlist = [jnp.array([1.0, 0.0, 0.0]), jnp.array([0.5, 0.5*st, 0.0]), jnp.array([-0.5, 0.5*st, 0.0])]
     else:
         raise ValueError(f"Invalid crystal direction: {crystal_direction}")
 
