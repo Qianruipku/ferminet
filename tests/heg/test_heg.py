@@ -39,6 +39,8 @@ class HEGTest(absltest.TestCase, ReferenceTestMixin):
         self.cfg.system.pbc.lattice_vectors = _sc_lattice_vecs(1.0, sum(self.cfg.system.particles))
         self.cfg.system.pbc.apply_pbc = True
         self.cfg.network.full_det = True
+        self.cfg.network.complex = True
+        self.cfg.system.pbc.min_kpoints = 1
 
         # Small network for fast testing
         self.cfg.network.ferminet.hidden_dims = ((16, 4),) * 2
@@ -46,7 +48,7 @@ class HEGTest(absltest.TestCase, ReferenceTestMixin):
         self.cfg.batch_size = 32
         self.cfg.pretrain.iterations = 0
         self.cfg.mcmc.burn_in = 5
-        self.cfg.mcmc.sample_all = True
+        self.cfg.mcmc.sample_all = False
         self.cfg.optim.iterations = 5
         
         # Make training deterministic

@@ -20,6 +20,7 @@ from reference_test_base import ReferenceTestMixin
 from ferminet.utils import system
 from ferminet import base_config
 from ferminet import train
+import jax.numpy as jnp
 
 
 class HeAtomTest(absltest.TestCase, ReferenceTestMixin):
@@ -47,6 +48,7 @@ class HeAtomTest(absltest.TestCase, ReferenceTestMixin):
 
         self.cfg.pretrain.method = None  # Pretraining is not currently implemented for systems in PBC
         self.cfg.system.pbc.lattice_vectors = a * np.eye(3)
+        reciprocal_lattice = np.linalg.inv(self.cfg.system.pbc.lattice_vectors).T * 2 * np.pi
 
         self.cfg.system.use_pp = True
         self.cfg.system.pp.symbols = ['Li']
@@ -73,6 +75,13 @@ class HeAtomTest(absltest.TestCase, ReferenceTestMixin):
 
         self.cfg.system.pbc.apply_pbc = True
         self.cfg.network.full_det = False
+        self.cfg.network.complex = True
+        self.cfg.system.pbc.min_kpoints = 1
+        kpoints_mp = jnp.array([[0.0, 0.0, 0.0],
+                          [0.5, 0.0, 0.0],
+                          [0.5, 0.5, 0.0],])
+        self.cfg.system.pbc.twist_weights = jnp.array([1.0, 4.0, 3.0])
+        self.cfg.system.pbc.twist_vectors = jnp.dot(kpoints_mp, reciprocal_lattice)
 
         # Small network for fast testing
         self.cfg.network.ferminet.hidden_dims = ((16, 4),) * 1

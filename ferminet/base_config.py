@@ -178,9 +178,9 @@ def default() -> ml_collections.ConfigDict:
             'feature_order2': 1,
             # Number cells to use in the Ewald summation on each direction
             'convergence_radius': 5,
-            # Minimum number of k-points in the envelope. Defaults to 
-            # the number of particles
-            'min_kpoints': None,
+            # Minimum number of k-points in the envelope.
+            # If None, defaults to the number of particles
+            'min_kpoints': 1,
             # Search radius for nearest neighbors
             'r_search': 0,
             'put_in_box': False,
