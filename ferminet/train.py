@@ -682,6 +682,20 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         cfg.system.pbc.lattice_vectors,
         use_complex
       )
+
+  if cfg.observables.ann_rate.calculate:
+    (observable_states['ann_rate'],
+     observable_fns['ann_rate']) = observables.cal_ann_rate(
+         signed_network,
+         cfg.system.particles,
+         cfg.system.pbc.apply_pbc,
+         cfg.system.pbc.lattice_vectors,
+     )
+    ann_rate_path = os.path.join(ckpt_save_path, 'ann_rate.txt')
+    ann_rate_file = open(ann_rate_path, 'a')
+    if os.path.getsize(ann_rate_path) == 0:
+      ann_rate_file.write('#step  Gamma(ns^-1)\n')
+      ann_rate_file.flush()
   
   # Initialisation done. We now want to have different PRNG streams on each
   # device. Shard the key over devices
@@ -1105,6 +1119,11 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
                           density=observable_data['apmd'][0]/ (t + 1),
                           ckpt_save_path=ckpt_save_path)
 
+      if cfg.observables.ann_rate.calculate and jax.process_index() == 0:
+        ann_rate_value = float(np.asarray(observable_data['ann_rate'][0]))
+        ann_rate_file.write(f'{t:05d}  {ann_rate_value:.10e}\n')
+        ann_rate_file.flush()
+
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(
           t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves, max_width, cfg.system.pbc.apply_pbc)
@@ -1214,4 +1233,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     if cfg.observables.density:
       density_matrix_file.close()
     if cfg.observables.rho_r.calculate:
-      rho_r_file.close() 
+      rho_r_file.close()
+    if cfg.observables.ann_rate.calculate:
+      ann_rate_file.close() 

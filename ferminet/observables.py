@@ -696,3 +696,79 @@ def cal_apmd(
 
     return state
   return pwgrids, g_magnitudes, (init_state, apmd_estimator)
+
+
+def cal_ann_rate(
+    signed_network: networks.FermiNetLike,
+    nspins: Tuple[int, ...],
+    apply_pbc: bool,
+    lattice_vectors: jnp.ndarray,
+) -> Tuple[jnp.ndarray, Observable]:
+  """Evaluates the annihilation rate observable.
+
+  The estimator computes
+  <|psi(r_i; r_1, ..., r_N)|^2 / |psi(r_+; r_1, ..., r_N)|^2>
+  averaged over walkers and electrons.
+
+  Args:
+    signed_network: Network callable returning phase/sign and log-magnitude.
+    nspins: Tuple containing the number of particles of each species.
+    apply_pbc: Whether or not we are on periodic boundary conditions.
+    complex_output: Whether the network output is complex-valued. The
+      estimator uses only |psi|^2 and is therefore independent of phase/sign.
+
+  Returns:
+    Initial state and a callable with same arguments as the network which
+    returns the Monte Carlo contribution to the annihilation rate.
+  """
+
+  if not apply_pbc:
+    raise NotImplementedError(
+        'Annihilation rate is only implemented for periodic boundary '
+        'conditions.')
+
+  init_state = jnp.zeros((jax.local_device_count(),))
+  prefactor = 50.48473
+  Volume = jnp.linalg.det(lattice_vectors)
+  n_particles = sum(nspins)
+  n_electrons = n_particles - 1  # exclude the positron
+
+
+  @functools.partial(constants.pmap)
+  def ann_rate_estimator(
+      params: networks.ParamTree,
+      data: networks.FermiNetData,
+      state: jnp.ndarray,
+  ) -> jnp.ndarray:
+    """Returns the annihilation rate contribution from configurations x."""
+
+    pos = data.positions.reshape(-1, n_particles, 3)
+    nwalker_per_device = pos.shape[0]
+
+    batch_network = jax.vmap(
+        signed_network, in_axes=(None, 0, 0, 0, 0), out_axes=(0, 0))
+    _, log_psi = batch_network(
+        params, data.positions, data.spins, data.atoms, data.charges)
+
+    def loop_electron(j, val):
+      pos_modified_j = pos.copy()
+      electron_j_coords = pos[:, j, :]
+      pos_modified_j = pos_modified_j.at[:, -1, :].set(electron_j_coords)
+
+      pos_modified_flat = jnp.reshape(
+        pos_modified_j, (nwalker_per_device, n_particles * 3))
+      _, log_psi_modified_j = batch_network(
+        params, pos_modified_flat, data.spins, data.atoms, data.charges)
+
+      # |psi_modified|^2 / |psi|^2 = exp(2 * (log|psi_modified| - log|psi|)).
+      ratio = jnp.exp(2.0 * (log_psi_modified_j - log_psi))
+      return val + jnp.sum(ratio)
+
+    contribution = jax.lax.fori_loop(
+      0, n_electrons, loop_electron, jnp.array(0.0, dtype=log_psi.dtype))
+
+    state = constants.pmean(contribution) / (n_electrons * nwalker_per_device)
+    
+    return state * prefactor * n_electrons / Volume
+
+  return init_state, ann_rate_estimator
