@@ -199,6 +199,9 @@ def make_loss(network: networks.LogFermiNetLike,
   )
   batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
   ntwist = twist_weights.shape[0]
+  # keep original per-twist weights for KFAC registration, then tile for
+  # per-sample weighting used in loss computation below.
+  twist_weights_orig = twist_weights
   twist_weights = jnp.tile(twist_weights[:, None],(1, nbatch_device)).reshape((-1,))  # (ntwist*nbatch,)
   @jax.custom_jvp
   def total_energy(
@@ -284,8 +287,20 @@ def make_loss(network: networks.LogFermiNetLike,
       term1 = (jnp.dot(clipped_el, jnp.conjugate(psi_tangent)) +
                jnp.dot(jnp.conjugate(clipped_el), psi_tangent))
       term2 = jnp.sum(clipped_energy*psi_tangent.real)
-      kfac_jax.register_normal_predictive_distribution(
-          psi_primal.real[:, None])
+      psi_group = psi_primal.reshape((ntwist, -1))
+      # register per-twist predictive distributions. use real/imag as two
+      # channels because KFAC's normal predictive distribution expects real
+      # outputs (squared-error form). weight each registration by the
+      # per-twist weight normalized by ntwist to match the overall loss
+      # averaging convention.
+      per_twist_weights = twist_weights_orig / ntwist
+      for i in range(ntwist):
+        psi_i = psi_group[i]
+        psi_features = jnp.stack([psi_i.real, psi_i.imag], axis=-1)  # (batch, 2)
+        kfac_jax.register_normal_predictive_distribution(
+            psi_features,
+            weight=per_twist_weights[i],
+        )
       primals_out = loss.real, aux_data
       device_batch_size_ntwist = jnp.shape(aux_data.local_energy)[1] * ntwist
       tangents_out = ((term1 - 2*term2).real / device_batch_size_ntwist, aux_data)
