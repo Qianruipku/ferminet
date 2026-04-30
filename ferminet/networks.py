@@ -1451,6 +1451,13 @@ def make_orbitals(
         network_blocks.linear_layer(h, **p)
         for h, p in zip(h_to_orbitals, params['orbital'])
     ]
+
+    if len(nspins) == 3:
+      # For three-species systems (e.g. electron-electron-positron), the
+      # last orbital channel must be non-negative. Enforce this by squaring
+      # the outputs for the final channel.
+      orbitals[-1] = jnp.square(orbitals[-1])
+
     if options.complex_output:
       # create imaginary orbitals
       orbitals = [
