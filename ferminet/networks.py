@@ -22,6 +22,7 @@ from ferminet import envelopes
 from ferminet import jastrows
 from ferminet import network_blocks
 from ferminet.utils import Lattice
+from ferminet.utils.min_distance import min_image_distance_triclinic
 import jax
 import jax.numpy as jnp
 from typing_extensions import Protocol
@@ -294,6 +295,9 @@ class BaseNetworkOptions:
           takes_self=False))
   feature_layer: FeatureLayer = None
   jastrow: jastrows.JastrowType = jastrows.JastrowType.NONE
+  jastrow_cut_length: float = 2.0
+  jastrow_order: int = 5
+  jastrow_C: float = 3.0
   complex_output: bool = False
 
 
@@ -1330,7 +1334,14 @@ def make_orbitals(
 
   # Optional Jastrow factor.
   jastrow_init, jastrow_apply = jastrows.get_jastrow(
-      options.jastrow, nspins, particle_masses, particle_charges, ndim)
+      options.jastrow,
+      nspins,
+      particle_masses,
+      particle_charges,
+      ndim,
+      cut_length=options.jastrow_cut_length,
+      poly_order=options.jastrow_order,
+      C=options.jastrow_C,)
 
   def init(key: chex.PRNGKey) -> ParamTree:
     """Returns initial random parameters for creating orbitals.
@@ -1486,14 +1497,20 @@ def make_orbitals(
     # Added pre-determinant for compatibility with pretraining.
     if jastrow_apply is not None:
       if apply_pbc:
-        s_ee = jnp.einsum('il,jkl->jki', lat.lattice_inv, ee)
-        lattice_metric = lat.lattice_vector_T @ lat.lattice_vector
-        n = s_ee.shape[0]
-        s_ee += jnp.eye(n)[..., None]
-        r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
-      jastrow = jnp.exp(
-          jastrow_apply(r_ee, params['jastrow'], nspins) / sum(nspins)
-      )
+        if options.jastrow == jastrows.JastrowType.CUT_EE:
+          n = ee.shape[0]
+          ee_safe = ee + jnp.eye(n, dtype=ee.dtype)[..., None]
+          _, r_ee = min_image_distance_triclinic(
+              ee_safe.reshape(-1, ee.shape[-1]), lat)
+          r_ee = r_ee.reshape(n, n) * (1.0 - jnp.eye(n, dtype=ee.dtype))
+        else:
+          s_ee = jnp.einsum('il,jkl->jki', lat.lattice_inv, ee)
+          lattice_metric = lat.lattice_vector_T @ lat.lattice_vector
+          n = s_ee.shape[0]
+          s_ee += jnp.eye(n)[..., None]
+          r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
+      jastrow_log = jastrow_apply(r_ee, params['jastrow'], nspins) / sum(nspins)
+      jastrow = jnp.exp(jnp.clip(jastrow_log, -30.0, 30.0))
       orbitals = [orbital * jastrow for orbital in orbitals]
 
     return orbitals
@@ -1631,6 +1648,9 @@ def make_fermi_net(
     envelope: Optional[envelopes.Envelope] = None,
     feature_layer: Optional[FeatureLayer] = None,
     jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.NONE,
+    jastrow_cut_length: float = 1.0,
+    jastrow_order: int = 3,
+    jastrow_C: float = 3.0,
     complex_output: bool = False,
     bias_orbitals: bool = False,
     full_det: bool = True,
@@ -1657,6 +1677,8 @@ def make_fermi_net(
     envelope: Envelope to use to impose orbitals go to zero at infinity.
     feature_layer: Input feature construction.
     jastrow: Type of Jastrow factor if used, or no jastrow if 'default'.
+    jastrow_cut_length: Cutoff length used by the cut_ee Jastrow.
+    jastrow_order: Polynomial order used by the cut_ee Jastrow.
     complex_output: If true, the network outputs complex numbers.
     bias_orbitals: If true, include a bias in the final linear layer to shape
       the outputs into orbitals.
@@ -1721,6 +1743,9 @@ def make_fermi_net(
       envelope=envelope,
       feature_layer=feature_layer,
       jastrow=jastrow,
+      jastrow_cut_length=jastrow_cut_length,
+      jastrow_order=jastrow_order,
+      jastrow_C=jastrow_C,
       complex_output=complex_output,
       bias_orbitals=bias_orbitals,
       full_det=full_det,

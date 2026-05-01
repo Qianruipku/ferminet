@@ -19,7 +19,7 @@ import importlib
 import os
 import time
 from collections import deque
-from typing import Optional, Mapping, Sequence, Tuple, Union
+from typing import Optional, Mapping, Sequence, Tuple, TypeAlias, Union
 
 from absl import logging
 import chex
@@ -57,7 +57,7 @@ from typing_extensions import Protocol
 
 
 # All optimizer states (KFAC and optax-based).
-OptimizerState = Union[optax.OptState, kfac_jax.Optimizer.State]
+OptimizerState: TypeAlias = Union[optax.OptState, kfac_jax.Optimizer.State]
 OptUpdateResults = Tuple[networks.ParamTree, Optional[OptimizerState],
                          jnp.ndarray,
                          Optional[qmc_loss_functions.AuxiliaryLossData]]
@@ -103,7 +103,7 @@ class Step(Protocol):
       self,
       data: networks.FermiNetData,
       params: networks.ParamTree,
-      state: OptimizerState,
+      state: Union[optax.OptState, kfac_jax.Optimizer.State],
       key: chex.PRNGKey,
       mcmc_width: jnp.ndarray,
   ) -> StepResults:
@@ -394,6 +394,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     core_electrons = {}
 
   # Create parameters, network, and vmaped/pmaped derivations
+  hartree_fock = None
   if cfg.pretrain.method == 'hf' and cfg.pretrain.iterations > 0:
     raise NotImplementedError("I have not yet implemented pretraining for"
                        "arbitrary fermions, please ask me to implement it")
@@ -478,6 +479,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         envelope=envelope,
         feature_layer=feature_layer,
         jastrow=cfg.network.get('jastrow', 'default'),
+        jastrow_cut_length=cfg.network.get('jastrow_cut_length', 2.0),
+        jastrow_order=cfg.network.get('jastrow_order', 5),
+        jastrow_C=cfg.network.get('jastrow_C', 3.0),
         bias_orbitals=cfg.network.bias_orbitals,
         full_det=cfg.network.full_det,
         rescale_inputs=cfg.network.get('rescale_inputs', False),
@@ -498,6 +502,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         envelope=envelope,
         feature_layer=feature_layer,
         jastrow=cfg.network.get('jastrow', 'default'),
+        jastrow_cut_length=cfg.network.get('jastrow_cut_length', 1.0),
+        jastrow_order=cfg.network.get('jastrow_order', 3),
         bias_orbitals=cfg.network.bias_orbitals,
         rescale_inputs=cfg.network.get('rescale_inputs', False),
         complex_output=use_complex,

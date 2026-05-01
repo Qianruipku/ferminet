@@ -326,8 +326,16 @@ def default() -> ml_collections.ConfigDict:
           # If true, determinants are dense rather than block-sparse
           'full_det': True,
           # If specified, include a pre-determinant Jastrow factor.
-          # One of 'default' (use network_type default), 'none', or 'simple_ee'.
+          # One of 'default' (use network_type default), 'none', 'simple_ee',
+          # or 'cut_ee'.
           'jastrow': 'default',
+          # Fixed cutoff length used by the cut_ee Jastrow.
+          'jastrow_cut_length': 2.0,
+          # Polynomial order used by the cut_ee Jastrow.
+          'jastrow_order': 5,
+          # Exponent C used in cut_ee Jastrow envelope (user-configurable).
+          # Default set to 3 for backward compatibility with previous code.
+          'jastrow_C': 3,
           # If true, rescale the inputs so they grow as log(|r|)
           'rescale_inputs': False,
           # String set to module.make_feature_layer, where make_feature_layer is

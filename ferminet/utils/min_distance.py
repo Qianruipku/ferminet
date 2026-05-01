@@ -42,7 +42,7 @@ def min_image_distance_cubic(r_ij : jnp.ndarray,
     # Smooth wrapping using trigonometric functions, helpful for auto-diff
     # angle = jnp.arctan2(jnp.sin(2 * jnp.pi * ds), jnp.cos(2 * jnp.pi * ds))
     # ds = angle / (2 * jnp.pi)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    ds = ds - jnp.floor(ds + 0.5) # wrap to [-0.5, 0.5)
 
     dr_min = jnp.einsum('ij,kj->ik', ds, lattice_vector)
     dr_norm = jnp.linalg.norm(dr_min, axis=1)
@@ -72,7 +72,7 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
     
     # Convert to fractional coordinates and wrap to primary cell
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    ds = ds - jnp.floor(ds + 0.5)
 
     # Generate all possible integer offsets
     rng = jnp.arange(-radius, radius+1)
@@ -87,11 +87,19 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
     
     # Find minimum distance candidates
     d = jnp.linalg.norm(dr_cand, axis=2)
-    k = jnp.argmin(d, axis=1)
+    d_min = jnp.min(d, axis=1, keepdims=True)
 
-    # Extract minimum displacement vectors and their norms
-    dr_min = dr_cand[jnp.arange(r_ij.shape[0]), k]
-    dr_norm = d[jnp.arange(r_ij.shape[0]), k]
+    # Avoid argmin to keep higher-order autodiff paths compatible with folx.
+    is_min = d == d_min
+    weights = is_min.astype(dr_cand.dtype)
+    weights = weights / jnp.maximum(
+        jnp.sum(weights, axis=1, keepdims=True),
+        jnp.array(1, dtype=dr_cand.dtype),
+    )
+
+    # Unique minimum -> exact selection. Degenerate minima -> average of ties.
+    dr_min = jnp.sum(dr_cand * weights[..., None], axis=1)
+    dr_norm = jnp.squeeze(d_min, axis=1)
 
     return dr_min, dr_norm
 
@@ -119,7 +127,7 @@ def find_neighbors_within_cutoff(r_ij : jnp.ndarray,
     
     # Convert to fractional coordinates and wrap to primary cell
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    ds = ds - jnp.floor(ds + 0.5)
 
     # Generate all possible integer offsets
     rng = jnp.arange(-radius, radius+1)
