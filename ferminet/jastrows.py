@@ -130,12 +130,13 @@ def _jastrow_ee_cut(
 
   Implements the form
 
-    u(r_ij) = (r_ij - L_u)^C Theta(L_u - r_ij) * [ alpha0
-              + (cusp_ij/(-L_u)^C + alpha0*C/L_u) * r_ij
-              + sum_{l=2}^{N_u} alpha_l r_ij^l ]
+    x = r / L
+    u(r) = L*(1 - x)^C Theta(1 - x) * [ alpha0
+              + (cusp + alpha0*C) * x
+              + sum_{l=2}^{N_u} alpha_l x^l ]
 
   Args:
-    cutoff_length: cutoff L_u.
+    cutoff_length: cutoff L.
     poly_order: N_u, highest polynomial power in the bracket (>=1).
     C: envelope exponent.
   """
@@ -172,9 +173,10 @@ def _jastrow_ee_cut(
       #  index 1..(poly_order-1) -> alpha_l for l=2..N_u (stored at index l-1)
       alpha_arr = params['alpha'][i, j]
       alpha0 = alpha_arr[0]
+      x = pos / cutoff_length
 
-      # linear coefficient as in the formula: cusp/(-L)^C + alpha0 * C / L
-      linear_coeff = cusp / ((-cutoff_length) ** C) + alpha0 * (C / cutoff_length)
+      # linear coefficient in the dimensionless polynomial P(x).
+      linear_coeff = cusp + alpha0 * C
 
       # Build coefficient list from highest degree down to constant for Horner:
       coeffs = []
@@ -184,13 +186,13 @@ def _jastrow_ee_cut(
       coeffs.append(linear_coeff)
       coeffs.append(alpha0)
 
-      poly = jnp.zeros_like(pos)
+      poly = jnp.zeros_like(x)
       for coeff in coeffs:
-        poly = coeff + pos * poly
-      # envelope (r - L)^C, active only when r < L
-      envelope = (pos - cutoff_length) ** C
-      cutoff_mask = (pos < cutoff_length).astype(pos.dtype)
-      u = envelope * poly * cutoff_mask * pair_mask
+        poly = coeff + x * poly
+      # envelope L * (1 - x)^C, active only when x < 1
+      envelope = (1.0 - x) ** C
+      cutoff_mask = (x < 1.0).astype(pos.dtype)
+      u = cutoff_length * envelope * poly * cutoff_mask * pair_mask
       jastrow_value += jnp.sum(u)
 
   return jastrow_value
@@ -205,7 +207,9 @@ def make_cut_ee_jastrow(
     poly_order: int = 3,
     C: int = 3,
 ) -> ...:
-  """Cutoff Jastrow for PBC: u(r)=(r-L)^C * [alpha0 + linear*r + sum_{l>=2} alpha_l r^l].
+  """Cutoff Jastrow for PBC using x=r/L.
+
+  u(r)=L*(1-x)^C * [alpha0 + linear*x + sum_{l>=2} alpha_l x^l], x=r/L.
 
   Args:
     nspins: number of particles in each spin/species channel.
