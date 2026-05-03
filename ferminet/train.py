@@ -504,6 +504,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         jastrow=cfg.network.get('jastrow', 'default'),
         jastrow_cut_length=cfg.network.get('jastrow_cut_length', 1.0),
         jastrow_order=cfg.network.get('jastrow_order', 3),
+        jastrow_C=cfg.network.get('jastrow_C', 3.0),
         bias_orbitals=cfg.network.bias_orbitals,
         rescale_inputs=cfg.network.get('rescale_inputs', False),
         complex_output=use_complex,

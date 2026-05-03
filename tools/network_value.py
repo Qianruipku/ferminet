@@ -11,6 +11,7 @@ from ferminet import networks
 from ferminet import envelopes
 from ferminet import psiformer
 from ferminet.utils import system
+from ferminet.utils import Lattice
 import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
 
@@ -82,6 +83,8 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             rescale_inputs=cfg.network.get('rescale_inputs', False),
             lattice=cfg.system.pbc.lattice_vectors,
             include_r_ae=include_r_ae
+            feature_order1=cfg.system.pbc.get('feature_order1', 1),
+            feature_order2=cfg.system.pbc.get('feature_order2', 1),
         )
     
     # Create envelope function
@@ -105,9 +108,14 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             particle_charges=cfg.system.charges,
             determinants=cfg.network.determinants,
             states=cfg.system.states,
+            apply_pbc=cfg.system.pbc.apply_pbc,
+            lat=Lattice(cfg.system.pbc.lattice_vectors),
             envelope=envelope,
             feature_layer=feature_layer,
             jastrow=cfg.network.get('jastrow', 'default'),
+            jastrow_cut_length=cfg.network.get('jastrow_cut_length', 2.0),
+            jastrow_order=cfg.network.get('jastrow_order', 5),
+            jastrow_C=cfg.network.get('jastrow_C', 3.0),
             bias_orbitals=cfg.network.bias_orbitals,
             full_det=cfg.network.full_det,
             rescale_inputs=cfg.network.get('rescale_inputs', False),
@@ -123,9 +131,14 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             particle_charges=cfg.system.charges,
             determinants=cfg.network.determinants,
             states=cfg.system.states,
+            apply_pbc=cfg.system.pbc.apply_pbc,
+            lat=Lattice(cfg.system.pbc.lattice_vectors),
             envelope=envelope,
             feature_layer=feature_layer,
             jastrow=cfg.network.get('jastrow', 'default'),
+            jastrow_cut_length=cfg.network.get('jastrow_cut_length', 1.0),
+            jastrow_order=cfg.network.get('jastrow_order', 3),
+            jastrow_C=cfg.network.get('jastrow_C', 3.0),
             bias_orbitals=cfg.network.bias_orbitals,
             rescale_inputs=cfg.network.get('rescale_inputs', False),
             complex_output=use_complex,
