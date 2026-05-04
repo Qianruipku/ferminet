@@ -81,6 +81,7 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             nspins=cfg.system.particles,
             ndim=cfg.system.ndim,
             rescale_inputs=cfg.network.get('rescale_inputs', False),
+            use_r_ee_square=cfg.network.get('use_r_ee_square', False)
             lattice=cfg.system.pbc.lattice_vectors,
             include_r_ae=include_r_ae
             feature_order1=cfg.system.pbc.get('feature_order1', 1),

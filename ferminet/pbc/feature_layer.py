@@ -43,6 +43,15 @@ def periodic_norm(metric: jnp.ndarray, scaled_r: jnp.ndarray) -> jnp.ndarray:
   sin_term = jnp.einsum('...m,mn,...n->...', b, metric, b)
   return (1 / (2 * jnp.pi)) * jnp.sqrt(cos_term + sin_term)
 
+def periodic_norm2(metric: jnp.ndarray, scaled_r: jnp.ndarray) -> jnp.ndarray:
+  """Returns the periodic norm of a set of vectors."""
+  chex.assert_rank(metric, expected_ranks=2)
+  a = (1 - jnp.cos(2 * jnp.pi * scaled_r))
+  b = jnp.sin(2 * jnp.pi * scaled_r)
+  cos_term = jnp.einsum('...m,mn,...n->...', a, metric, a)
+  sin_term = jnp.einsum('...m,mn,...n->...', b, metric, b)
+  return (1 / (2 * jnp.pi))**2 * (cos_term + sin_term)
+
 def put_in_box(r: jnp.ndarray, lat: Lattice) -> jnp.ndarray:
   """Maps a set of vectors into the periodic box defined by the lattice.
   Args:
@@ -66,6 +75,7 @@ def make_pbc_feature_layer(
   rescale_inputs: bool = False,
   lattice: jnp.ndarray = jnp.eye(3),
   include_r_ae: bool = True,
+  use_r_ee_square: bool = False,
   feature_order1: int = 1,
   feature_order2: int = 1,
 ) -> networks.FeatureLayer:
@@ -120,7 +130,10 @@ def make_pbc_feature_layer(
     # Don't take gradients through |0|
     n = ee.shape[0]
     s_ee += jnp.eye(n)[..., None]
-    r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
+    if use_r_ee_square:
+      r_ee = periodic_norm2(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
+    else:
+      r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
 
     if include_r_ae:
       ae_features = jnp.concatenate((r_ae[..., None], ae), axis=2)

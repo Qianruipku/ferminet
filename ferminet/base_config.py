@@ -338,6 +338,9 @@ def default() -> ml_collections.ConfigDict:
           'jastrow_C': 3,
           # If true, rescale the inputs so they grow as log(|r|)
           'rescale_inputs': False,
+          # If true, use squared periodic distance for electron-electron
+          # distance feature in PBC feature layer.
+          'use_r_ee_square': False,
           # String set to module.make_feature_layer, where make_feature_layer is
           # callable (type: MakeFeatureLayer) which creates an object with
           # member functions init() and apply() that initialize parameters
