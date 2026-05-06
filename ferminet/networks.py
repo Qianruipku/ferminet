@@ -298,6 +298,7 @@ class BaseNetworkOptions:
   jastrow_cut_length: float = 2.0
   jastrow_order: int = 5
   jastrow_C: float = 3.0
+  jastrow_pair_kind: Optional[Any] = None
   complex_output: bool = False
 
 
@@ -1341,7 +1342,8 @@ def make_orbitals(
       ndim,
       cut_length=options.jastrow_cut_length,
       poly_order=options.jastrow_order,
-      C=options.jastrow_C,)
+      C=options.jastrow_C,
+      pair_kind=options.jastrow_pair_kind,)
 
   def init(key: chex.PRNGKey) -> ParamTree:
     """Returns initial random parameters for creating orbitals.
@@ -1497,7 +1499,20 @@ def make_orbitals(
     # Added pre-determinant for compatibility with pretraining.
     if jastrow_apply is not None:
       if apply_pbc:
-        if options.jastrow == jastrows.JastrowType.CUT_EE:
+        if options.jastrow == jastrows.JastrowType.MIXED_EE:
+          # MIXED_EE: CUT_EE pairs use min-image r_ee; SIMPLE_EE pairs use
+          # periodic-norm r_ee. Compute both and pass as a tuple.
+          n = ee.shape[0]
+          ee_safe = ee + jnp.eye(n, dtype=ee.dtype)[..., None]
+          _, r_ee_cut = min_image_distance_triclinic(
+              ee_safe.reshape(-1, ee.shape[-1]), lat)
+          r_ee_cut = r_ee_cut.reshape(n, n) * (1.0 - jnp.eye(n, dtype=ee.dtype))
+          s_ee = jnp.einsum('il,jkl->jki', lat.lattice_inv, ee)
+          lattice_metric = lat.lattice_vector_T @ lat.lattice_vector
+          s_ee_safe = s_ee + jnp.eye(n)[..., None]
+          r_ee_simple = periodic_norm(lattice_metric, s_ee_safe) * (1.0 - jnp.eye(n))
+          r_ee = (r_ee_cut, r_ee_simple)
+        elif options.jastrow == jastrows.JastrowType.CUT_EE:
           n = ee.shape[0]
           ee_safe = ee + jnp.eye(n, dtype=ee.dtype)[..., None]
           _, r_ee = min_image_distance_triclinic(
@@ -1651,6 +1666,7 @@ def make_fermi_net(
     jastrow_cut_length: float = 1.0,
     jastrow_order: int = 3,
     jastrow_C: float = 3.0,
+    jastrow_pair_kind: Optional[Any] = None,
     complex_output: bool = False,
     bias_orbitals: bool = False,
     full_det: bool = True,
@@ -1746,6 +1762,7 @@ def make_fermi_net(
       jastrow_cut_length=jastrow_cut_length,
       jastrow_order=jastrow_order,
       jastrow_C=jastrow_C,
+      jastrow_pair_kind=jastrow_pair_kind,
       complex_output=complex_output,
       bias_orbitals=bias_orbitals,
       full_det=full_det,

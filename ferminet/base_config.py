@@ -327,15 +327,22 @@ def default() -> ml_collections.ConfigDict:
           'full_det': True,
           # If specified, include a pre-determinant Jastrow factor.
           # One of 'default' (use network_type default), 'none', 'simple_ee',
-          # or 'cut_ee'.
+          # 'cut_ee', or 'mixed_ee'.
           'jastrow': 'default',
-          # Fixed cutoff length used by the cut_ee Jastrow.
+          # Fixed cutoff length used by the cut_ee / mixed_ee Jastrow.
           'jastrow_cut_length': 2.0,
-          # Polynomial order used by the cut_ee Jastrow.
+          # Polynomial order used by the cut_ee / mixed_ee Jastrow.
           'jastrow_order': 5,
-          # Exponent C used in cut_ee Jastrow envelope (user-configurable).
+          # Exponent C used in cut_ee / mixed_ee Jastrow envelope.
           # Default set to 3 for backward compatibility with previous code.
           'jastrow_C': 3,
+          # Per-species-pair Jastrow type for mixed_ee mode. Should be a
+          # n_species x n_species list of lists of strings, each one of
+          # 'simple_ee', 'cut_ee', or 'none'. Required when jastrow='mixed_ee'.
+          # Must be symmetric (pair_kind[i][j] == pair_kind[j][i]).
+          # Example for 2 species (e.g. electrons + positrons):
+          #   [['cut_ee', 'simple_ee'], ['simple_ee', 'none']]
+          'jastrow_pair_kind': None,
           # If true, rescale the inputs so they grow as log(|r|)
           'rescale_inputs': False,
           # If true, use squared periodic distance for electron-electron

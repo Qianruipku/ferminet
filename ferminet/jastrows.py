@@ -28,6 +28,7 @@ class JastrowType(enum.Enum):
   NONE = enum.auto()
   SIMPLE_EE = enum.auto()
   CUT_EE = enum.auto()
+  MIXED_EE = enum.auto()
 
 
 def _strict_upper_triangle_mask(size: int, dtype: jnp.dtype) -> jnp.ndarray:
@@ -256,6 +257,130 @@ def make_cut_ee_jastrow(
   return init, apply
 
 
+def make_mixed_ee_jastrow(
+    nspins: jnp.ndarray,
+    masses: jnp.ndarray,
+    charges: jnp.ndarray,
+    ndim: int,
+    pair_kind,
+    cut_length: float = 1.0,
+    poly_order: int = 3,
+    C: int = 3,
+) -> ...:
+  """Per-species-pair Jastrow: each (i,j) pair independently uses SIMPLE_EE, CUT_EE, or NONE.
+
+  Args:
+    pair_kind: n_species x n_species indexable of JastrowType (or strings
+      convertible via JastrowType[s.upper()]). Must be symmetric. Only the
+      upper triangle (j >= i) is read; the lower triangle is ignored.
+    cut_length: cutoff L for any CUT_EE pairs.
+    poly_order: polynomial order N_u for any CUT_EE pairs.
+    C: envelope exponent for any CUT_EE pairs.
+  """
+  if ndim != 3:
+    raise NotImplementedError('MIXED_EE Jastrow only implemented for ndim = 3')
+  if poly_order < 1:
+    raise ValueError(f'poly_order must be >= 1, got {poly_order}')
+
+  n_species = len(nspins)
+  cutoff_length = float(cut_length)
+
+  # Normalise pair_kind to JastrowType.
+  def _to_jt(v):
+    if isinstance(v, str):
+      return JastrowType[v.upper()]
+    return v
+
+  norm_kind = [[_to_jt(pair_kind[i][j]) for j in range(n_species)]
+               for i in range(n_species)]
+
+  def init() -> Mapping[str, jnp.ndarray]:
+    return {
+        'simple_alpha': jnp.ones((n_species, n_species)),
+        'cut_alpha': jnp.zeros((n_species, n_species, poly_order)),
+    }
+
+  def apply(
+      r_ee,
+      params: ParamTree,
+      nspins: tuple,
+  ) -> jnp.ndarray:
+    """Evaluate mixed Jastrow factor.
+
+    Args:
+      r_ee: either a single array (non-PBC, used for all pairs) or a tuple
+        (r_ee_cut, r_ee_simple) where r_ee_cut is used for CUT_EE pairs and
+        r_ee_simple is used for SIMPLE_EE pairs (PBC case).
+    """
+    if isinstance(r_ee, tuple):
+      r_ee_cut, r_ee_simple = r_ee
+    else:
+      r_ee_cut = r_ee_simple = r_ee
+
+    masses_arr = jnp.asarray(masses)
+    charges_arr = jnp.asarray(charges)
+    red_masses = (masses_arr.reshape(1, -1) * masses_arr.reshape(-1, 1)) / (
+        masses_arr.reshape(1, -1) + masses_arr.reshape(-1, 1))
+    charge_prods = charges_arr.reshape(1, -1) * charges_arr.reshape(-1, 1)
+    diag_cusp = jnp.eye(n_species) * red_masses * charge_prods / 2
+    offdiag_cusp = (1 - jnp.eye(n_species)) * red_masses * charge_prods
+    cusp_matrix = diag_cusp + offdiag_cusp
+
+    splits = [sum(nspins[:k+1]) for k in range(len(nspins) - 1)]
+    r_ees_cut = [
+        jnp.split(r, splits, axis=1)
+        for r in jnp.split(r_ee_cut, splits, axis=0)
+    ]
+    r_ees_simple = [
+        jnp.split(r, splits, axis=1)
+        for r in jnp.split(r_ee_simple, splits, axis=0)
+    ]
+
+    jastrow_value = jnp.asarray(0.0)
+    for i in range(n_species):
+      for j in range(i, n_species):
+        kind = norm_kind[i][j]
+        if kind == JastrowType.NONE:
+          continue
+        cusp = cusp_matrix[i, j]
+
+        if kind == JastrowType.SIMPLE_EE:
+          pos = r_ees_simple[i][j]
+          if i == j:
+            pair_mask = _strict_upper_triangle_mask(nspins[i], pos.dtype)
+          else:
+            pair_mask = jnp.ones_like(pos)
+          alpha = params['simple_alpha'][i, j]
+          term = -(cusp * alpha**2) / (alpha + pos)
+          jastrow_value += jnp.sum(term * pair_mask)
+        elif kind == JastrowType.CUT_EE:
+          pos = r_ees_cut[i][j]
+          if i == j:
+            pair_mask = _strict_upper_triangle_mask(nspins[i], pos.dtype)
+          else:
+            pair_mask = jnp.ones_like(pos)
+          alpha_arr = params['cut_alpha'][i, j]
+          alpha0 = alpha_arr[0]
+          x = pos / cutoff_length
+          linear_coeff = cusp + alpha0 * C
+          coeffs = []
+          for l in range(poly_order, 1, -1):
+            coeffs.append(alpha_arr[l - 1])
+          coeffs.append(linear_coeff)
+          coeffs.append(alpha0)
+          poly = jnp.zeros_like(x)
+          for coeff in coeffs:
+            poly = coeff + x * poly
+          envelope = (1.0 - x) ** C
+          cutoff_mask = (x < 1.0).astype(pos.dtype)
+          u = cutoff_length * envelope * poly * cutoff_mask * pair_mask
+          jastrow_value += jnp.sum(u)
+
+    return jastrow_value
+
+  return init, apply
+
+
 def get_jastrow(
       jastrow: JastrowType,
       nspins: jnp.ndarray,
@@ -265,6 +390,7 @@ def get_jastrow(
       cut_length: float = 1.0,
       poly_order: int = 3,
       C: int = 3,
+      pair_kind=None,
   ) -> ...:
   jastrow_init, jastrow_apply = None, None
   if jastrow == JastrowType.SIMPLE_EE:
@@ -273,6 +399,12 @@ def get_jastrow(
   elif jastrow == JastrowType.CUT_EE:
     jastrow_init, jastrow_apply = make_cut_ee_jastrow(
         nspins, masses, charges, ndim, cut_length=cut_length, poly_order=poly_order, C=C)
+  elif jastrow == JastrowType.MIXED_EE:
+    if pair_kind is None:
+      raise ValueError('pair_kind must be provided for MIXED_EE Jastrow')
+    jastrow_init, jastrow_apply = make_mixed_ee_jastrow(
+        nspins, masses, charges, ndim, pair_kind=pair_kind,
+        cut_length=cut_length, poly_order=poly_order, C=C)
   elif jastrow != JastrowType.NONE:
     raise ValueError(f'Unknown Jastrow Factor type: {jastrow}')
 
