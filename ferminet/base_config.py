@@ -120,6 +120,17 @@ def default() -> ml_collections.ConfigDict:
               'eps': 1.0e-8,
               'eps_root': 0.0,
           },
+          # Jastrow natural gradient update (runs after the main KFAC step).
+          # Set lr > 0 to enable. Uses a diagonal Fisher approximation:
+          #   F_alpha = 4 * E[(d log|psi| / d alpha)^2]
+          # and updates alpha by -lr(t) * grad / (F_alpha + damping), where
+          # lr(t) follows the same decay/delay schedule as the main optimizer:
+          #   lr(t) = lr * (1 / (1 + t/delay))^decay
+          # Suggested: lr = optim.lr.rate / 50 (e.g. 0.001 when rate=0.05).
+          'jastrow_ng': {
+              'lr': 0.0,       # 0 = disabled; set to e.g. optim.lr.rate/50
+              'damping': 1e-3,
+          },
       },
       'log': {
           'stats_frequency': 1,  # iterations between logging of stats

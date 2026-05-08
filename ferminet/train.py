@@ -238,7 +238,11 @@ def make_kfac_training_step(
     mcmc_step,
     damping: float,
     optimizer: kfac_jax.Optimizer,
-    reset_if_nan: bool = False) -> Step:
+    logabs_network=None,
+    jastrow_lr_schedule=None,
+    jastrow_damping: float = 1e-3,
+    reset_if_nan: bool = False,
+    t_init: int = 0) -> Step:
   """Factory to create traning step for KFAC optimizers.
 
   Args:
@@ -246,8 +250,18 @@ def make_kfac_training_step(
       for creating the callable.
     damping: value of damping to use for each KFAC update step.
     optimizer: KFAC optimizer instance.
+    logabs_network: Single-sample log|psi| callable with signature
+      (params, pos, spins, atoms, charges) -> scalar. Required for the Jastrow
+      natural gradient step. If None, the Jastrow NG step is disabled.
+    jastrow_lr_schedule: Callable[[int], float] giving the Jastrow natural
+      gradient learning rate as a function of the step number. Uses the same
+      decay/delay schedule as the main optimizer but with a lower base rate.
+      Set to None (default) to disable the Jastrow NG step.
+    jastrow_damping: Diagonal damping added to the Fisher estimate for the
+      Jastrow natural gradient update.
     reset_if_nan: If true, reset the params and opt state to the state at the
       previous step when the loss is NaN
+    t_init: Initial step counter value (used when resuming from checkpoint).
 
   Returns:
     step, a callable which performs a set of MCMC steps and then an optimization
@@ -262,6 +276,58 @@ def make_kfac_training_step(
   copy_tree = constants.pmap(
       functools.partial(jax.tree_util.tree_map,
                         lambda x: (1.0 * x).astype(x.dtype)))
+
+  # Build Jastrow natural gradient step (pmapped, runs after KFAC update).
+  # Uses a diagonal Fisher approximation:
+  #   F_alpha = 4 * E[(d log|psi| / d alpha)^2]     (global mean across devices)
+  #   g_alpha = 2 * E[(E_L - <E_L>) * d log|psi|/d alpha]
+  #   alpha  -= lr * g_alpha / (F_alpha + jastrow_damping)
+  # lr follows the same decay/delay schedule as the main optimizer but with a
+  # lower base rate; it is computed in Python at each step and passed as a
+  # replicated scalar so that the pmapped kernel can remain JIT-compiled.
+  # The local energies come from the KFAC forward pass (stats['aux']) to avoid
+  # a redundant forward pass; the scores are evaluated at the KFAC-updated params.
+  if logabs_network is not None and jastrow_lr_schedule is not None:
+    def _jastrow_ng_inner(params, local_energy, positions, spins, atoms,
+                          charges, lr):
+      """Per-device Jastrow natural gradient update (runs inside pmap)."""
+      def score_fn(jastrow_params, pos, spins_, atoms_, charges_):
+        p = {**params, 'jastrow': jastrow_params}
+        return logabs_network(p, pos, spins_, atoms_, charges_)
+
+      # batch_score: same structure as params['jastrow'] with leading batch dim
+      batch_score = jax.vmap(
+          jax.grad(score_fn), in_axes=(None, 0, 0, 0, 0)
+      )(params['jastrow'], positions, spins, atoms, charges)
+
+      # Global mean local energy; use real part for robustness with complex psi
+      mean_el = constants.pmean(jnp.mean(local_energy.real))
+      diff = local_energy.real - mean_el  # shape [batch_per_device]
+
+      # VMC gradient: g = 2 * E[(E_L - mean_E_L) * score]
+      g = jax.tree_util.tree_map(
+          lambda s: 2.0 * constants.pmean(
+              jnp.einsum('i,i...->...', diff, s) / s.shape[0]),
+          batch_score)
+
+      # Diagonal Fisher: F = 4 * E[score^2]
+      fisher = jax.tree_util.tree_map(
+          lambda s: constants.pmean(jnp.mean(s ** 2, axis=0)) * 4.0,
+          batch_score)
+
+      # Natural gradient step
+      new_jastrow = jax.tree_util.tree_map(
+          lambda a, ga, f: a - lr * ga / (f + jastrow_damping),
+          params['jastrow'], g, fisher)
+
+      return {**params, 'jastrow': new_jastrow}
+
+    _jastrow_ng = constants.pmap(_jastrow_ng_inner)
+  else:
+    _jastrow_ng = None
+
+  # Python-level step counter for the lr schedule (updated each call to step).
+  _step_counter = [t_init]
 
   def step(
       data: networks.FermiNetData,
@@ -291,6 +357,23 @@ def make_kfac_training_step(
         momentum=shared_mom,
         damping=shared_damping,
     )
+
+    # Jastrow natural gradient step (separate from KFAC, with its own lr/F).
+    # Runs only when jastrow_lr_schedule is set and params contain 'jastrow'.
+    if _jastrow_ng is not None and 'jastrow' in new_params:
+      current_lr = jnp.asarray(
+          jastrow_lr_schedule(_step_counter[0]), dtype=jnp.float32)
+      lr_rep = kfac_jax.utils.replicate_all_local_devices(current_lr)
+      new_params = _jastrow_ng(
+          new_params,
+          stats['aux'].local_energy,
+          data.positions,
+          data.spins,
+          data.atoms,
+          data.charges,
+          lr_rep,
+      )
+    _step_counter[0] += 1
 
     if reset_if_nan:
       nan_val = jnp.any(jnp.isnan(stats['loss'])) or \
@@ -951,11 +1034,22 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         optimizer_step=make_opt_update_step(evaluate_loss, optimizer),
         reset_if_nan=cfg.optim.reset_if_nan)
   elif isinstance(optimizer, kfac_jax.Optimizer):
+    jng_base_lr = cfg.optim.jastrow_ng.lr
+    if jng_base_lr > 0.0:
+      def jastrow_lr_schedule(t_: int) -> float:
+        return jng_base_lr * float(
+            (1.0 / (1.0 + (t_ / cfg.optim.lr.delay))) ** cfg.optim.lr.decay)
+    else:
+      jastrow_lr_schedule = None
     step = make_kfac_training_step(
         mcmc_step=mcmc_step,
         damping=cfg.optim.kfac.damping,
         optimizer=optimizer,
-        reset_if_nan=cfg.optim.reset_if_nan)
+        logabs_network=logabs_network,
+        jastrow_lr_schedule=jastrow_lr_schedule,
+        jastrow_damping=cfg.optim.jastrow_ng.damping,
+        reset_if_nan=cfg.optim.reset_if_nan,
+        t_init=t_init)
   else:
     raise ValueError(f'Unknown optimizer: {optimizer}')
 
