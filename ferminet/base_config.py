@@ -372,6 +372,9 @@ def default() -> ml_collections.ConfigDict:
             'dq': 0.1,
             'crystal_direction': '100',
             'elements': -1,
+          },
+          'ann_rate': {  # annihilation rate (single scalar per step)
+            'calculate': False,
           }
       },
       'debug': {
