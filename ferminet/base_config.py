@@ -186,6 +186,8 @@ def default() -> ml_collections.ConfigDict:
             'put_in_box': False,
             'twist_vectors': jnp.array([[0.0, 0.0, 0.0]]),  # (ntwist, ndim) array of twist vectors
             'twist_weights': jnp.array([1.0]),  # (ntwist) array of twist weights
+            # whether to use separate twist vectors for different spin channels. [1, 1, ...] with length equal to number of spin channels means to use twist vectors for all channels, while [0, 1, ...] means to use twist vectors for only the second channel and not the first.
+            'use_twist_per_channel': None,
           },
           # Units of *input* coords of atoms. Either 'bohr' or
           # 'angstrom'. Internally work in a.u.; positions in

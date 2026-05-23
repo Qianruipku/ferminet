@@ -1330,7 +1330,8 @@ def make_orbitals(
     particle_charges: jnp.array,
     ndim: int,
     apply_pbc: bool = False,
-    lat: Lattice = None
+    lat: Lattice = None,
+    use_twist_per_channel: Optional[Sequence[int]] = None,
 ) -> ...:
   """Returns init, apply pair for orbitals.
 
@@ -1489,6 +1490,7 @@ def make_orbitals(
             pos=pos_channels[i],
             r_ae=r_ae_channels[i],
             r_ee=r_ee_channels[i],
+            use_twist=bool(use_twist_per_channel[i]),
             twist_shift=twist_vector,
             **params['envelope'][i],
         )
@@ -1652,6 +1654,7 @@ def make_fermi_net(
     apply_pbc: bool = False,
     lat: Lattice = None,
     envelope: Optional[envelopes.Envelope] = None,
+    use_twist_per_channel: Optional[Sequence[int]] = None,
     feature_layer: Optional[FeatureLayer] = None,
     jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.NONE,
     complex_output: bool = False,
@@ -1773,7 +1776,8 @@ def make_fermi_net(
       particle_charges=particle_charges,
       ndim=ndim,
       apply_pbc=apply_pbc,
-      lat=lat
+      lat=lat,
+      use_twist_per_channel=use_twist_per_channel,
   )
 
   def init(key: chex.PRNGKey) -> ParamTree:

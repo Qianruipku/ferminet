@@ -67,11 +67,15 @@ def make_multiwave_envelope(kpoints: jnp.ndarray, use_complex: bool) -> envelope
 
   def apply(*, ae: jnp.ndarray, pos: jnp.ndarray,
             r_ae: jnp.ndarray, r_ee: jnp.ndarray,
+            use_twist: bool,
             twist_shift: jnp.ndarray, # (ndim,)
             sigma: jnp.ndarray) -> jnp.ndarray:
     """See ferminet.envelopes.EnvelopeApply."""
     del r_ae, r_ee  # unused
-    phase_coords = pos @ (kpoints + twist_shift).T   # (ne, nkpoints)
+    if use_twist:
+      phase_coords = pos @ (kpoints + twist_shift).T   # (ne, nkpoints)
+    else:
+      phase_coords = pos @ kpoints.T
     if not use_complex:
       waves = jnp.concatenate((jnp.cos(phase_coords), jnp.sin(phase_coords)),
                             axis=2)
