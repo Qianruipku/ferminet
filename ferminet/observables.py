@@ -569,6 +569,7 @@ def cal_apmd(
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
     ntwist: int,
+    per_twist_reduce_scale: jnp.ndarray,
     complex_output: bool,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, Observable]:
   """Evaluates the annihilating pair moment density.
@@ -597,6 +598,12 @@ def cal_apmd(
   
   # Update the actual number of plane waves found
   n_planewaves = pwgrids.shape[0]
+
+  if per_twist_reduce_scale.shape[0] != ntwist:
+    raise ValueError('per_twist_reduce_scale must have shape (ntwist,).')
+  local_twist_indices = np.flatnonzero(np.asarray(per_twist_reduce_scale))
+  reduce_scale_local = per_twist_reduce_scale[local_twist_indices]
+  ntwist_local = int(local_twist_indices.shape[0])
   
   # Initialize state with proper dimensions
   init_state = jnp.zeros((jax.local_device_count(),  ntwist, n_planewaves))
@@ -652,7 +659,7 @@ def cal_apmd(
       
       # Use matrix multiplication: cos(phase) * factor gives [nwalker_per_device, n_planewaves]
       contribution_per_walker = jnp.cos(phase) * factor[:, None]  # [nwalker_per_device, n_planewaves]
-      contribution_per_walker = jnp.reshape(contribution_per_walker, (ntwist, -1, n_planewaves)) # [ntwist, nwalker_per_device/ntwist, n_planewaves]
+      contribution_per_walker = jnp.reshape(contribution_per_walker, (ntwist_local, -1, n_planewaves)) # [ntwist_local, nwalker_per_device/ntwist_local, n_planewaves]
       contribution = jnp.sum(contribution_per_walker, axis=1)  # [ntwist, n_planewaves]
 
       return val + contribution
@@ -687,15 +694,22 @@ def cal_apmd(
       
       # Use matrix multiplication: cos(phase) * factor gives [nwalker_per_device, n_planewaves]
       contribution_per_walker = jnp.exp(1.0j*phase) * factor[:, None]  # [nwalker_per_device, n_planewaves]
-      contribution_per_walker = jnp.reshape(contribution_per_walker, (ntwist, -1, n_planewaves)) # [ntwist, nwalker_per_device/ntwist, n_planewaves]
+      contribution_per_walker = jnp.reshape(contribution_per_walker, (ntwist_local, -1, n_planewaves)) # [ntwist_local, nwalker_per_device/ntwist_local, n_planewaves]
       contribution = jnp.sum(jnp.real(contribution_per_walker), axis=1)  # [ntwist, n_planewaves]
 
       return val + contribution
 
     if complex_output:
-      state += constants.pmean(jax.lax.fori_loop(0, n_electrons, loop_electron_complex, jnp.zeros((ntwist, n_planewaves),))) / (n_electrons * nwalker_per_device)
+      apmd_local = jax.lax.fori_loop(
+          0, n_electrons, loop_electron_complex, jnp.zeros((ntwist_local, n_planewaves),))
     else:
-      state += constants.pmean(jax.lax.fori_loop(0, n_electrons, loop_electron_real, jnp.zeros((ntwist, n_planewaves),))) / (n_electrons * nwalker_per_device)
+      apmd_local = jax.lax.fori_loop(
+          0, n_electrons, loop_electron_real, jnp.zeros((ntwist_local, n_planewaves),))
+
+    apmd_global = jnp.zeros((ntwist, n_planewaves), dtype=apmd_local.dtype)
+    apmd_global = apmd_global.at[local_twist_indices].set(
+        apmd_local * reduce_scale_local[:, None])
+    state += constants.pmean(apmd_global) / (n_electrons * nwalker_per_device)
 
     return state
   return pwgrids, g_magnitudes, (init_state, apmd_estimator)
@@ -706,6 +720,7 @@ def cal_ann_rate(
     nspins: Tuple[int, ...],
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
+    per_twist_reduce_scale: jnp.ndarray,
     ntwist: int = 1,
 ) -> Tuple[jnp.ndarray, Observable]:
   """Evaluates the annihilation rate observable.
@@ -730,6 +745,12 @@ def cal_ann_rate(
     raise NotImplementedError(
         'Annihilation rate is only implemented for periodic boundary '
         'conditions.')
+
+  if per_twist_reduce_scale.shape[0] != ntwist:
+    raise ValueError('per_twist_reduce_scale must have shape (ntwist,).')
+  local_twist_indices = np.flatnonzero(np.asarray(per_twist_reduce_scale))
+  reduce_scale_local = per_twist_reduce_scale[local_twist_indices]
+  ntwist_local = int(local_twist_indices.shape[0])
 
   init_state = jnp.zeros((jax.local_device_count(), ntwist))
   prefactor = 50.48473
@@ -766,13 +787,16 @@ def cal_ann_rate(
 
       # |psi_modified|^2 / |psi|^2 = exp(2 * (log|psi_modified| - log|psi|)).
       ratio = jnp.exp(2.0 * (log_psi_modified_j - log_psi))
-      ratio_per_twist = jnp.reshape(ratio, (ntwist, -1))  # [ntwist, walkers_per_twist]
-      return val + jnp.sum(ratio_per_twist, axis=1)  # [ntwist]
+      ratio_per_twist = jnp.reshape(ratio, (ntwist_local, -1))  # [ntwist_local, walkers_per_twist]
+      return val + jnp.sum(ratio_per_twist, axis=1)  # [ntwist_local]
 
-    contribution = jax.lax.fori_loop(
-      0, n_electrons, loop_electron, jnp.zeros((ntwist,), dtype=log_psi.dtype))
+    contribution_local = jax.lax.fori_loop(
+      0, n_electrons, loop_electron, jnp.zeros((ntwist_local,), dtype=log_psi.dtype))
+    contribution_global = jnp.zeros((ntwist,), dtype=contribution_local.dtype)
+    contribution_global = contribution_global.at[local_twist_indices].set(
+        contribution_local * reduce_scale_local)
 
-    state = constants.pmean(contribution) / (n_electrons * nwalker_per_device)
+    state = constants.pmean(contribution_global) / (n_electrons * nwalker_per_device)
     
     return state * prefactor * n_electrons / Volume
 

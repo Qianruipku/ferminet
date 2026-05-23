@@ -327,14 +327,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   num_states = cfg.system.get('states', 0) or 1  # avoid 0/1 confusion
   logging.info('Starting QMC with %i XLA devices per host '
                'across %i hosts.', num_devices, num_hosts)
-  if cfg.batch_size % (num_devices * num_hosts) != 0:
-    raise ValueError('Batch size must be divisible by number of devices, '
-                     f'got batch size {cfg.batch_size} for '
-                     f'{num_devices * num_hosts} devices.')
-  host_batch_size = cfg.batch_size // num_hosts  # batch size per host
-  total_host_batch_size = host_batch_size * num_states
-  device_batch_size = host_batch_size // num_devices  # batch size per device
-  data_shape = (num_devices, device_batch_size)
 
   # Check if mol is a pyscf molecule and convert to internal representation
   if cfg.system.pyscf_mol:
@@ -345,12 +337,60 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   atoms = jnp.stack([jnp.array(atom.coords) for atom in cfg.system.molecule])
   charges = jnp.array([atom.charge for atom in cfg.system.molecule])
   nspins = cfg.system.particles
-  ntwist = cfg.system.pbc.twist_vectors.shape[0]
+  global_twist_vectors = cfg.system.pbc.twist_vectors
+  global_twist_weights = cfg.system.pbc.twist_weights
+  ntwist = int(global_twist_vectors.shape[0])
+  process_index = jax.process_index()
+
+  if ntwist % num_hosts == 0:
+    local_twists = ntwist // num_hosts
+    local_twist_start = process_index * local_twists
+    local_twist_indices = np.arange(local_twist_start, local_twist_start + local_twists)
+    hosts_per_twist = 1
+  elif num_hosts % ntwist == 0:
+    hosts_per_twist = num_hosts // ntwist
+    local_twist_indices = np.asarray([process_index // hosts_per_twist])
+  else:
+    raise ValueError(
+        'Twist-host parallelism requires divisibility: '
+        f'num_hosts={num_hosts}, ntwist={ntwist}. Expected '
+        'ntwist % num_hosts == 0 or num_hosts % ntwist == 0.')
+
+  if cfg.batch_size % (num_devices * hosts_per_twist) != 0:
+    raise ValueError(
+        'Batch size must be divisible by number of devices per twist, '
+        f'got batch size {cfg.batch_size} for '
+        f'{num_devices * hosts_per_twist} devices-per-twist.')
+  host_batch_size = cfg.batch_size // hosts_per_twist  # per-host batch per twist
+  device_batch_size = host_batch_size // num_devices  # per-device batch per twist
+
+  # Keep full ntwist shape on every host. Non-owned twists are set to zero so
+  # global reductions can still use pmean/psum semantics.
+  local_ntwist = int(local_twist_indices.shape[0])
+  local_twist_vectors = global_twist_vectors[local_twist_indices]
+  local_twist_mask = np.zeros((ntwist,), dtype=np.float32)
+  local_twist_mask[local_twist_indices] = 1.0
+  local_twist_mask = jnp.asarray(local_twist_mask)
+  twist_reduce_scale = float(num_hosts / hosts_per_twist)
+  masked_twist_vectors = global_twist_vectors * local_twist_mask[:, None]
+  masked_twist_weights = global_twist_weights * local_twist_mask
+  per_twist_reduce_scale = local_twist_mask * twist_reduce_scale
+
+  total_host_batch_size = host_batch_size * num_states
+  data_shape = (num_devices, device_batch_size)
+
+  logging.info(
+      'Host %d handles twists %s (global ntwist=%d, reduce scale=%.1f).',
+      process_index,
+      local_twist_indices.tolist(),
+      ntwist,
+      twist_reduce_scale,
+  )
 
   # Generate atomic configurations for each walker
-  batch_atoms = jnp.tile(atoms[None, ...], [device_batch_size*ntwist, 1, 1])
+  batch_atoms = jnp.tile(atoms[None, ...], [device_batch_size*local_ntwist, 1, 1])
   batch_atoms = kfac_jax.utils.replicate_all_local_devices(batch_atoms)
-  batch_charges = jnp.tile(charges[None, ...], [device_batch_size*ntwist, 1])
+  batch_charges = jnp.tile(charges[None, ...], [device_batch_size*local_ntwist, 1])
   batch_charges = kfac_jax.utils.replicate_all_local_devices(batch_charges)
 
   # Define default values for particle masses and charges
@@ -581,11 +621,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
    weighted_stats_ckpt) = init.initialize_training_data_and_checkpoints(
        cfg=cfg,
        key=key,
+       twist_vectors=local_twist_vectors,
        data_shape=data_shape,
        batch_atoms=batch_atoms,
        batch_charges=batch_charges,
        total_host_batch_size=total_host_batch_size,
-       host_batch_size=host_batch_size,
+       host_batch_size_ntwist=host_batch_size * local_ntwist,
        core_electrons=core_electrons
    )
   
@@ -679,6 +720,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         cfg.system.pbc.apply_pbc,
         cfg.system.pbc.lattice_vectors,
         ntwist,
+        per_twist_reduce_scale,
         use_complex
       )
 
@@ -689,6 +731,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
          cfg.system.particles,
          cfg.system.pbc.apply_pbc,
          cfg.system.pbc.lattice_vectors,
+         per_twist_reduce_scale,
          ntwist=ntwist,
      )
     ann_rate_path = os.path.join(ckpt_save_path, 'ann_rate.txt')
@@ -741,7 +784,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       device_batch_size,
       nspins=cfg.system.particles,
       ndim=cfg.system.ndim,
-      ntwist=ntwist,
+      ntwist=local_ntwist,
       steps=cfg.mcmc.steps,
       atoms=atoms_to_mcmc,
       sample_all= cfg.mcmc.sample_all,
@@ -839,8 +882,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     evaluate_loss = qmc_loss_functions.make_loss(
         log_network if use_complex else logabs_network,
         local_energy,
-        cfg.system.pbc.twist_weights,
+        masked_twist_weights,
         device_batch_size,
+        per_twist_reduce_scale=per_twist_reduce_scale,
         clip_local_energy=cfg.optim.clip_local_energy,
         clip_from_median=cfg.optim.clip_median,
         center_at_clipped_energy=cfg.optim.center_at_clip,

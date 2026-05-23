@@ -25,6 +25,7 @@ import folx
 import jax
 import jax.numpy as jnp
 import kfac_jax
+import numpy as np
 from typing_extensions import Protocol
 
 
@@ -86,6 +87,7 @@ def clip_local_values(
     clip_from_median: bool,
     center_at_clipped_value: bool,
     complex_output: bool = False,
+    axis_index_groups: Tuple[Tuple[int, ...], ...] | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
   """Clips local operator estimates to remove outliers.
 
@@ -105,6 +107,9 @@ def clip_local_values(
       back to the gradient around the clipped quantities, so the mean difference
       across the batch is guaranteed to be zero.
     complex_output: If true, the local energies will be complex valued.
+    axis_index_groups: Optional groups of pmapped devices to reduce over.
+      When provided, collectives are restricted to these groups instead of all
+      devices in the pmap axis.
 
   Returns:
     Tuple of the central value (estimate of the expectation value of the
@@ -113,16 +118,33 @@ def clip_local_values(
     device.
   """
 
-  batch_mean = lambda values: constants.pmean(jnp.mean(values, axis=0))
+  def mean_across_devices(values):
+    local_mean = jnp.mean(values, axis=0)
+    if axis_index_groups is None:
+      return constants.pmean(local_mean)
+    return jax.lax.pmean(
+        local_mean,
+        axis_name=constants.PMAP_AXIS_NAME,
+        axis_index_groups=axis_index_groups,
+    )
+
+  def gather_across_devices(values):
+    if axis_index_groups is None:
+      return constants.all_gather(values)
+    return jax.lax.all_gather(
+        values,
+        axis_name=constants.PMAP_AXIS_NAME,
+        axis_index_groups=axis_index_groups,
+    )
 
   def clip_at_total_variation(values, center, scale):
-    tv = batch_mean(jnp.abs(values- center))
+    tv = mean_across_devices(jnp.abs(values - center))
     return jnp.clip(values, center - scale * tv, center + scale * tv)
 
   if clip_from_median:
     # More natural place to center the clipping, but expensive due to both
     # the median and all_gather (at least on multihost)
-    all_local_values = constants.all_gather(local_values).real
+    all_local_values = gather_across_devices(local_values).real
     shape = all_local_values.shape
     if all_local_values.ndim == 3:  # energy_and_overlap case
       all_local_values = all_local_values.reshape([-1, shape[-1]])
@@ -143,7 +165,7 @@ def clip_local_values(
     clipped_local_values = clip_at_total_variation(
         local_values, clip_center, clip_scale)
   if center_at_clipped_value:
-    diff_center = batch_mean(clipped_local_values)
+    diff_center = mean_across_devices(clipped_local_values)
   else:
     diff_center = mean_local_values
   diff = clipped_local_values - diff_center
@@ -154,6 +176,7 @@ def make_loss(network: networks.LogFermiNetLike,
               local_energy: hamiltonian.LocalEnergy,
               twist_weights: jnp.ndarray,
               nbatch_device: int,
+              per_twist_reduce_scale: jnp.ndarray,
               clip_local_energy: float = 0.0,
               clip_from_median: bool = True,
               center_at_clipped_energy: bool = True,
@@ -199,10 +222,34 @@ def make_loss(network: networks.LogFermiNetLike,
   )
   batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
   ntwist = twist_weights.shape[0]
+  if per_twist_reduce_scale.shape[0] != ntwist:
+    raise ValueError('per_twist_reduce_scale must have shape (ntwist,).')
+  local_twist_indices = np.flatnonzero(np.asarray(per_twist_reduce_scale))
+  reduce_scale_local = per_twist_reduce_scale[local_twist_indices]
+  ntwist_local = int(local_twist_indices.shape[0])
+  twist_weights_local = twist_weights[local_twist_indices]
+  num_hosts = jax.process_count()
+  local_device_count = jax.local_device_count()
+  if ntwist % num_hosts == 0:
+    hosts_per_twist = 1
+  elif num_hosts % ntwist == 0:
+    hosts_per_twist = num_hosts // ntwist
+  else:
+    raise ValueError(
+        'Twist-host parallelism requires divisibility: '
+        f'num_hosts={num_hosts}, ntwist={ntwist}. Expected '
+        'ntwist % num_hosts == 0 or num_hosts % ntwist == 0.')
+  clip_axis_index_groups = tuple(
+      tuple(
+          host_id * local_device_count + device_id
+          for host_id in range(group_id * hosts_per_twist,
+                               (group_id + 1) * hosts_per_twist)
+          for device_id in range(local_device_count)
+      )
+      for group_id in range(num_hosts // hosts_per_twist)
+  )
   # keep original per-twist weights for KFAC registration, then tile for
   # per-sample weighting used in loss computation below.
-  twist_weights_orig = twist_weights
-  twist_weights = jnp.tile(twist_weights[:, None],(1, nbatch_device)).reshape((-1,))  # (ntwist*nbatch,)
   @jax.custom_jvp
   def total_energy(
       params: networks.ParamTree,
@@ -228,18 +275,29 @@ def make_loss(network: networks.LogFermiNetLike,
     """
     keys = jax.random.split(key, num=data.positions.shape[0])
     e_l, e_l_mat = batch_local_energy(params, keys, data)
-    loss = constants.pmean(jnp.mean(e_l*twist_weights))
-    e_l_2 = e_l.reshape((ntwist, -1))
-    loss2 = constants.pmean(jnp.mean(e_l_2, axis=1))
-    loss2 = loss2.reshape((ntwist, 1))
-    loss_diff = e_l_2 - loss2
-    variance2 = constants.pmean(jnp.mean(jnp.real(loss_diff * jnp.conj(loss_diff)), axis=1))
-    variance2 = variance2.reshape((ntwist, 1))
+
+    e_l_local = e_l.reshape((ntwist_local, -1))
+    loss = constants.pmean(
+      jnp.mean(e_l_local * twist_weights_local[:, None]))
+
+    e_l_local_mean = jnp.mean(e_l_local, axis=1)
+    e_l_global_mean = jnp.zeros(ntwist, dtype=e_l_local_mean.dtype)
+    e_l_global_mean = e_l_global_mean.at[local_twist_indices].set(e_l_local_mean*reduce_scale_local)
+    loss_global = constants.pmean(e_l_global_mean) # dimension: (ntwist,)
+    loss2 = loss_global[local_twist_indices].reshape((ntwist_local, 1))
+
+    loss_diff = e_l_local - loss2 # dimension: (ntwist_local, nbatch)
+    loss_var = jnp.mean(jnp.real(loss_diff * jnp.conj(loss_diff)), axis=1) # dimension: (ntwist_local,)
+    loss_var_global = jnp.zeros(ntwist, dtype=loss_var.dtype)
+    loss_var_global = loss_var_global.at[local_twist_indices].set(loss_var*reduce_scale_local)
+    variance2 = constants.pmean(loss_var_global)
+
+
     return loss, AuxiliaryLossData(
-        energy=loss2,                 # (ntwist, 1)
-        variance=variance2,           # (ntwist, 1)
-        local_energy=e_l_2,          # (ntwist, nbatch)
-        clipped_energy=e_l_2,        # (ntwist, nbatch)
+      energy=loss_global,                 # (ntwist)
+      variance=variance2,           # (ntwist)
+      local_energy=e_l_local,          # (ntwist_local, nbatch)
+      clipped_energy=e_l_local,        # (ntwist_local, nbatch)
         local_energy_mat=e_l_mat,    
     )
 
@@ -248,20 +306,25 @@ def make_loss(network: networks.LogFermiNetLike,
     """Custom Jacobian-vector product for unbiased local energy gradients."""
     params, key, data = primals
     loss, aux_data = total_energy(params, key, data)
-    loss2 = aux_data.energy
+    loss2 = aux_data.energy[local_twist_indices] # dimension: (ntwist_local)
 
     if clip_local_energy > 0.0:
-      batch_clip_local_energy = jax.vmap(clip_local_values, in_axes=(0, 0, None, None, None, None), out_axes=(0,0))
+      batch_clip_local_energy = jax.vmap(
+        clip_local_values,
+        in_axes=(0, 0, None, None, None, None, None),
+        out_axes=(0, 0),
+      )
       aux_data.clipped_energy, diff = batch_clip_local_energy(
           aux_data.local_energy,
           loss2,
           clip_local_energy,
           clip_from_median,
           center_at_clipped_energy,
-          complex_output)
+          complex_output,
+          clip_axis_index_groups)
       aux_data.clipped_energy = jnp.tile(aux_data.clipped_energy[:, None], (1, aux_data.local_energy.shape[1]))
     else:
-      diff = aux_data.local_energy - loss2 #dimension: (ntwist, nbatch)
+      diff = aux_data.local_energy - loss2[:, None] #dimension: (ntwist_local, nbatch)
 
     # Due to the simultaneous requirements of KFAC (calling convention must be
     # (params, rng, data)) and Laplacian calculation (only want to take
@@ -281,34 +344,33 @@ def make_loss(network: networks.LogFermiNetLike,
     psi_primal, psi_tangent = jax.jvp(batch_network, primals, tangents)
     if complex_output:
       
-      clipped_el2 = diff + aux_data.clipped_energy # dimension: (ntwist, nbatch)
-      clipped_el = clipped_el2.reshape((-1,))*twist_weights # dimension: (ntwist*nbatch,)
-      clipped_energy = aux_data.clipped_energy.reshape((-1,))*twist_weights # dimension: (ntwist*nbatch,)
+      clipped_el2 = diff + aux_data.clipped_energy # dimension: (ntwist_local, nbatch)
+      clipped_el = (clipped_el2 * twist_weights_local[:, None]).reshape((-1,))
+      clipped_energy = (aux_data.clipped_energy * twist_weights_local[:, None]).reshape((-1,))
       term1 = (jnp.dot(clipped_el, jnp.conjugate(psi_tangent)) +
                jnp.dot(jnp.conjugate(clipped_el), psi_tangent))
       term2 = jnp.sum(clipped_energy*psi_tangent.real)
-      psi_group = psi_primal.reshape((ntwist, -1))
-      # register per-twist predictive distributions. use real/imag as two
-      # channels because KFAC's normal predictive distribution expects real
-      # outputs (squared-error form). weight each registration by the
-      # per-twist weight normalized by ntwist to match the overall loss
-      # averaging convention.
-      per_twist_weights = twist_weights_orig / ntwist
-      for i in range(ntwist):
+      psi_group = psi_primal.reshape((ntwist_local, -1))
+      # Register per-twist predictive distributions using only the real part.
+      # Weight each registration by the per-twist weight normalized by ntwist
+      # to match the overall loss averaging convention.
+      per_twist_weights = twist_weights_local / ntwist
+      for i in range(ntwist_local):
         psi_i = psi_group[i]
-        psi_features = jnp.stack([psi_i.real, psi_i.imag], axis=-1)  # (batch, 2)
         kfac_jax.register_normal_predictive_distribution(
-            psi_features,
+        psi_i.real[:, None],
             weight=per_twist_weights[i],
         )
       primals_out = loss.real, aux_data
-      device_batch_size_ntwist = jnp.shape(aux_data.local_energy)[1] * ntwist
+      device_batch_size_ntwist = nbatch_device * ntwist_local
       tangents_out = ((term1 - 2*term2).real / device_batch_size_ntwist, aux_data)
     else:
+      psi_primal = psi_primal.reshape((ntwist_local, -1)).reshape((-1,))
+      psi_tangent = psi_tangent.reshape((ntwist_local, -1)).reshape((-1,))
       kfac_jax.register_normal_predictive_distribution(psi_primal[:, None])
       primals_out = loss, aux_data
-      device_batch_size_ntwist = jnp.shape(aux_data.local_energy)[1] * ntwist
-      diff = diff.reshape((-1,))*twist_weights  # dimension: (ntwist*nbatch,)
+      device_batch_size_ntwist = nbatch_device * ntwist_local
+      diff = (diff * twist_weights_local[:, None]).reshape((-1,))
       tangents_out = (jnp.dot(psi_tangent, diff) / device_batch_size_ntwist, aux_data)
     return primals_out, tangents_out
 

@@ -179,10 +179,11 @@ def save(save_path: str,
     opt_state = synced_states['opt_state'] 
     mcmc_width = synced_states['mcmc_width']
   
-  data = multihost_utils.process_allgather(data) # shape (num_hosts, num_local_devices*ntwist, batch_per_device, ...)
+  data = multihost_utils.process_allgather(data) # shape (num_hosts, num_local_devices, local_ntwist*batch_per_device, ...)
   sharded_key = multihost_utils.process_allgather(sharded_key) # shape (num_hosts, num_local_devices, 2)
-  ckpt_filename = os.path.join(save_path, f'qmcjax_ckpt_{t:06d}.npz')
+  ckpt_filename = ''
   if process == 0:
+    ckpt_filename = os.path.join(save_path, f'qmcjax_ckpt_{t:06d}.npz')
     logging.info('Saving checkpoint %s', ckpt_filename)
     single_device_params = jax.tree.map(lambda x: x[0], params)
     single_device_mcmc_width = jax.tree.map(lambda x: x[0], mcmc_width)
@@ -283,9 +284,15 @@ def restore(restore_filename: str,
       else:
         if previous_num_processes != current_num_processes or \
            previous_local_devices != current_local_devices:
-          data = jax.tree_util.tree_map(lambda x:
-                                        x.reshape((current_num_processes, current_local_devices, -1) + x.shape[3:]),
-                                        data)
+          # data = jax.tree_util.tree_map(lambda x:
+          #                               x.reshape((current_num_processes, current_local_devices, -1) + x.shape[3:]),
+          #                               data)
+          raise ValueError(
+              'Checkpoint restore requires identical parallel topology. '
+              f'Checkpoint: num_processes={previous_num_processes}, '
+              f'local_devices={previous_local_devices}; '
+              f'Current: num_processes={current_num_processes}, '
+              f'local_devices={current_local_devices}.')
         data = jax.tree_util.tree_map(lambda x: x[process], data)
         now_batch_per_device = previous_total_batch // current_total_devices
         needed_batch_per_device = host_batch_size_ntwist // current_local_devices

@@ -101,6 +101,7 @@ def init_electrons(  # pylint: disable=dangerous-default-value
 def init_mcmc_data(
     key: jax.random.PRNGKey,
     cfg: ml_collections.ConfigDict,
+    twist_vectors: jnp.ndarray,
     data_shape: Tuple[int, int],
     batch_atoms: jnp.ndarray,
     batch_charges: jnp.ndarray,
@@ -125,13 +126,13 @@ def init_mcmc_data(
   # make sure data on each host is initialized differently
   subkey = jax.random.fold_in(subkey, jax.process_index())
   # create electron state (position and spin)
-  ntwist = cfg.system.pbc.twist_vectors.shape[0]
+  ntwist_local = twist_vectors.shape[0]
   pos, spins = init_electrons(
       subkey,
       cfg.system.molecule,
       cfg.system.particles,
       cfg.system.ndim,
-      ntwist,
+      ntwist_local,
       batch_size=total_host_batch_size,
       init_width=cfg.mcmc.init_width,
       core_electrons=core_electrons,
@@ -139,15 +140,15 @@ def init_mcmc_data(
   # For excited states, each device has a batch of walkers, where each walker
   # is nstates * nelectrons. The vmap over nstates is handled in the function
   # created in make_total_ansatz
-  pos = jnp.reshape(pos, (data_shape[0], ntwist*data_shape[1], -1))
+  pos = jnp.reshape(pos, (data_shape[0], ntwist_local*data_shape[1], -1))
   pos = kfac_jax.utils.broadcast_all_local_devices(pos)
-  spins = jnp.reshape(spins, (data_shape[0], ntwist*data_shape[1], -1))
+  spins = jnp.reshape(spins, (data_shape[0], ntwist_local*data_shape[1], -1))
   spins = kfac_jax.utils.broadcast_all_local_devices(spins)
   twist = jnp.tile(
-      cfg.system.pbc.twist_vectors[None, :, None, :],
+      twist_vectors[None, :, None, :],
       (data_shape[0], 1, data_shape[1], 1)
   )
-  twist = jnp.reshape(twist, (data_shape[0], ntwist*data_shape[1], -1))
+  twist = jnp.reshape(twist, (data_shape[0], ntwist_local*data_shape[1], -1))
   twist = kfac_jax.utils.broadcast_all_local_devices(twist)
   data = networks.FermiNetData(
       positions=pos, spins=spins, atoms=batch_atoms, charges=batch_charges, twist=twist
@@ -158,11 +159,12 @@ def init_mcmc_data(
 def initialize_training_data_and_checkpoints(
     cfg: ml_collections.ConfigDict,
     key: jax.random.PRNGKey,
+    twist_vectors: jnp.ndarray,
     data_shape: Tuple[int, int],
     batch_atoms: jnp.ndarray,
     batch_charges: jnp.ndarray,
     total_host_batch_size: int,
-    host_batch_size: int,
+    host_batch_size_ntwist: int,
     core_electrons: Mapping[str, int],
 ) -> Tuple[
     int,  # t_init
@@ -198,8 +200,6 @@ def initialize_training_data_and_checkpoints(
   ckpt_restore_filename = (
       checkpoint.find_last_checkpoint(ckpt_save_path) or
       checkpoint.find_last_checkpoint(ckpt_restore_path))
-  ntwist = cfg.system.pbc.twist_vectors.shape[0]
-
   if ckpt_restore_filename:
     (t_init,
      data,
@@ -213,14 +213,15 @@ def initialize_training_data_and_checkpoints(
          ckpt_restore_filename,
          cfg.restart.load_opt_state,
          cfg.restart.load_data,
-         host_batch_size * ntwist)
+         host_batch_size_ntwist)
     
     # If we didn't load MCMC data from checkpoint, initialize it fresh
     if not cfg.restart.load_data or data is None:
       logging.info('Do not use MCMC data in checkpoint. Initializing new MCMC data.')
       key, data = init_mcmc_data(
           key,
-          cfg, 
+          cfg,
+          twist_vectors,
           data_shape,
           batch_atoms,
           batch_charges,
@@ -228,15 +229,16 @@ def initialize_training_data_and_checkpoints(
           core_electrons,
       )
     else:
-      if data.positions.shape[0] * data.positions.shape[1] < host_batch_size:
+      if data.positions.shape[0] * data.positions.shape[1] < host_batch_size_ntwist:
         raise ValueError(
-            f'Wrong batch size in loaded data. Expected {host_batch_size}, found '
+            f'Wrong batch size in loaded data. Expected {host_batch_size_ntwist}, found '
             f'{data.positions.shape[0] * data.positions.shape[1]}.')
   else:
     logging.info('No checkpoint found. Training new model.')
     key, data = init_mcmc_data(
         key,
-        cfg, 
+        cfg,
+        twist_vectors,
         data_shape,
         batch_atoms,
         batch_charges,
