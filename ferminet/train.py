@@ -465,6 +465,10 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     )
     envelope = pbc_envelopes.make_multiwave_envelope(kpoints, use_complex)
 
+  use_twist_per_channel = cfg.system.pbc.get('use_twist_per_channel', None)
+  if use_twist_per_channel is None:
+    use_twist_per_channel = [1] * len(nspins)
+
   if cfg.network.network_type == 'ferminet':
     network = networks.make_fermi_net(
         nspins,
@@ -477,6 +481,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         apply_pbc=cfg.system.pbc.apply_pbc,
         lat=lat,
         envelope=envelope,
+        use_twist_per_channel=use_twist_per_channel,
         feature_layer=feature_layer,
         jastrow=cfg.network.get('jastrow', 'default'),
         bias_orbitals=cfg.network.bias_orbitals,
