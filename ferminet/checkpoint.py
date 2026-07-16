@@ -30,6 +30,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils
 import kfac_jax
+import h5py
 
 
 def find_last_checkpoint(ckpt_path: Optional[str] = None) -> Optional[str]:
@@ -105,20 +106,73 @@ def get_restore_path(restore_path: Optional[str] = None) -> Optional[str]:
   return ckpt_restore_path
 
 
-def save_positions(positions: jnp.ndarray, step: int, save_path: str):
+def save_positions(positions: jnp.ndarray,
+                   step: int,
+                   save_path: str,
+                   is_last_step: bool = False):
   """Saves out the electron positions in unwrapped coordinates.
+
+  This simplified function always operates in per-process + stacked mode:
+  each process appends its local positions for the current step into a
+  per-process HDF5 file `pos{process}_all.h5` under dataset `positions`.
 
   Args:
     positions: electron positions to save, shape (num_devices, batch_per_device, num_electrons, 3)
-    step: current training step, used to name the file
-    save_path: path to directory to save positions to. The position file is
-      save_path/positions_$step.npy, where $step is the current training step.
+    step: current training step (unused for stacked mode but kept for API)
+    save_path: path to directory to save positions to.
   """
   process = jax.process_index()
-  all_positions = multihost_utils.process_allgather(positions) # shape (num_hosts, num_local_devices, batch_per_device, num_electrons*3)
-  if process == 0:
-    pos_filename = os.path.join(save_path, f'positions_{step:06d}.npy')
-    np.save(pos_filename, all_positions)
+  os.makedirs(save_path, exist_ok=True)
+  #local_positions shape: (num_local_devices, batch_per_device, natom*3)
+  local_positions = np.asarray(positions)
+  natom = local_positions.shape[-1] // 3
+  configs = local_positions.reshape(-1, natom, 3) # shape (num_local_devices * batch_per_device, natom, 3)
+  n_configs = configs.shape[0]
+  
+  pos_filename = os.path.join(save_path, f'pos{process}_all.h5')
+  init_step_capacity = 100
+  step_capacity = 100
+  with h5py.File(pos_filename, 'a') as hf:
+    # Create dataset if missing. Dataset layout: (n_steps, n_configs, natom, 3)
+    if 'positions' not in hf:
+      init_capacity = max(init_step_capacity, 1)
+      chunk0 = min(init_capacity, step_capacity)
+      hf.create_dataset(
+          'positions',
+          shape=(init_capacity, n_configs, natom, 3),
+          maxshape=(None, n_configs, natom, 3),
+          chunks=(chunk0, n_configs, natom, 3),
+          compression='gzip',
+          dtype=configs.dtype)
+
+    dset = hf['positions']
+    # Ensure config/atom dimensions match. Allow swapped (natom, n_configs, 3)
+    expected_shape = (n_configs, natom, 3)
+    swapped_shape = (natom, n_configs, 3)
+    if dset.shape[1:] == expected_shape:
+      out_configs = configs
+    else:
+      logging.warning('Existing positions dataset has shape %s, expected %s or swapped %s.',
+                      dset.shape[1:], expected_shape, swapped_shape)
+      raise ValueError('Incompatible positions dataset shape.')
+
+    # Use provided `step` as the index along the step axis.
+    if step >= dset.shape[0]:
+      new_size = dset.shape[0]
+      if new_size == 0:
+        new_size = step_capacity
+      while step >= new_size:
+        new_size += step_capacity
+      dset.resize(new_size, axis=0)
+
+    dset[step] = out_configs
+
+    # If this is the last step, shrink dataset to exact length (step + 1)
+    if is_last_step:
+      final_size = step + 1
+      if final_size < dset.shape[0]:
+        dset.resize(final_size, axis=0)
+      hf.attrs['finalized'] = 1
 
 def save(save_path: str,
          t: int,
