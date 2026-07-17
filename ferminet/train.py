@@ -1214,7 +1214,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
                        sync_states=cfg.restart.sync_states, check_consistency=cfg.restart.check_consistency)
       
       if cfg.mcmc.save_positions:
-        checkpoint.save_positions(data.positions, t, "positions", t == cfg.optim.iterations - 1)
+        checkpoint.save_positions(
+            data.positions,
+            t,
+            "positions",
+            t == cfg.optim.iterations - 1,
+            pos_list=cfg.mcmc.pos_list)
 
     # Training completed - log timing summary
     total_training_time = time.time() - training_start_time
