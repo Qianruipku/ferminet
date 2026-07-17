@@ -236,6 +236,7 @@ def default() -> ml_collections.ConfigDict:
           'scale_by_nuclear_distance': False,
           'blocks': 1,  # Number of blocks to split the MCMC sampling into
           'save_positions': False,  # Save the electron positions in pos.npy
+          'pos_list': None,  # Optional list of particle indices to store; None stores all particles.
       },
       'network': {
           'network_type': 'ferminet',  # One of 'ferminet' or 'psiformer'.

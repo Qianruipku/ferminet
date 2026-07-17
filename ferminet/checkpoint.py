@@ -17,7 +17,7 @@
 import dataclasses
 import datetime
 import os
-from typing import Optional
+from typing import Optional, Sequence
 import zipfile
 
 from absl import logging
@@ -109,7 +109,8 @@ def get_restore_path(restore_path: Optional[str] = None) -> Optional[str]:
 def save_positions(positions: jnp.ndarray,
                    step: int,
                    save_path: str,
-                   is_last_step: bool = False):
+                   is_last_step: bool = False,
+                   pos_list: Optional[Sequence[int]] = None):
   """Saves out the electron positions in unwrapped coordinates.
 
   This simplified function always operates in per-process + stacked mode:
@@ -120,6 +121,8 @@ def save_positions(positions: jnp.ndarray,
     positions: electron positions to save, shape (num_devices, batch_per_device, num_electrons, 3)
     step: current training step (unused for stacked mode but kept for API)
     save_path: path to directory to save positions to.
+    pos_list: optional particle indices to save. If None, all particles are
+      saved.
   """
   process = jax.process_index()
   os.makedirs(save_path, exist_ok=True)
@@ -127,16 +130,20 @@ def save_positions(positions: jnp.ndarray,
   local_positions = np.asarray(positions)
   natom = local_positions.shape[-1] // 3
   configs = local_positions.reshape(-1, natom, 3) # shape (num_local_devices * batch_per_device, natom, 3)
+  if pos_list is not None:
+    selected = np.asarray(list(pos_list), dtype=np.int64)
+    configs = configs[:, selected, :]
+    natom = configs.shape[1]
   n_configs = configs.shape[0]
   
   pos_filename = os.path.join(save_path, f'pos{process}_all.h5')
-  init_step_capacity = 100
-  step_capacity = 100
+  init_step_capacity = 1000
+  min_step_capacity = 1000
   with h5py.File(pos_filename, 'a') as hf:
     # Create dataset if missing. Dataset layout: (n_steps, n_configs, natom, 3)
     if 'positions' not in hf:
       init_capacity = max(init_step_capacity, 1)
-      chunk0 = min(init_capacity, step_capacity)
+      chunk0 = min(init_capacity, min_step_capacity)
       hf.create_dataset(
           'positions',
           shape=(init_capacity, n_configs, natom, 3),
@@ -160,9 +167,9 @@ def save_positions(positions: jnp.ndarray,
     if step >= dset.shape[0]:
       new_size = dset.shape[0]
       if new_size == 0:
-        new_size = step_capacity
+        new_size = min_step_capacity
       while step >= new_size:
-        new_size += step_capacity
+        new_size *= 2
       dset.resize(new_size, axis=0)
 
     dset[step] = out_configs
