@@ -33,6 +33,127 @@ import kfac_jax
 import h5py
 
 
+def create_save_positions_writer(save_path: str,
+                                 sample_positions: jnp.ndarray,
+                                 pos_list: Optional[Sequence[int]] = None,
+                                 buffer_steps: int = 100):
+  """Creates a buffered positions writer and initializes backing storage."""
+  process = jax.process_index()
+  os.makedirs(save_path, exist_ok=True)
+  pos_filename = os.path.join(save_path, f'pos{process}_all.h5')
+
+  sample_local_positions = np.asarray(sample_positions)
+  natom = sample_local_positions.shape[-1] // 3
+  sample_configs = sample_local_positions.reshape(-1, natom, 3)
+  if pos_list is not None:
+    selected = np.asarray(list(pos_list), dtype=np.int64)
+    sample_configs = sample_configs[:, selected, :]
+    natom = sample_configs.shape[1]
+  n_configs = sample_configs.shape[0]
+
+  buffer_state = {
+      'start_step': None,
+      'count': 0,
+      'data': np.empty((buffer_steps, n_configs, natom, 3),
+                       dtype=sample_configs.dtype),
+  }
+
+  init_step_capacity = 1000
+  hf = h5py.File(pos_filename, 'a')
+  if 'positions' not in hf:
+    init_capacity = max(init_step_capacity, 1)
+    hf.create_dataset(
+        'positions',
+        shape=(init_capacity, n_configs, natom, 3),
+        maxshape=(None, n_configs, natom, 3),
+        chunks=(buffer_steps, n_configs, natom, 3),
+        compression='gzip',
+        dtype=sample_configs.dtype)
+  dset = hf['positions']
+  expected_shape = (n_configs, natom, 3)
+  if dset.shape[1:] != expected_shape:
+    logging.warning('Existing positions dataset has shape %s, expected %s.',
+                    dset.shape[1:], expected_shape)
+    hf.close()
+    raise ValueError('Incompatible positions dataset shape.')
+
+  def save_positions(positions: jnp.ndarray,
+                     step: int,
+                     is_last_step: bool = False):
+    """Saves out the electron positions in unwrapped coordinates.
+
+    This simplified function always operates in per-process + stacked mode:
+    each process appends its local positions for the current step into a
+    per-process HDF5 file `pos{process}_all.h5` under dataset `positions`.
+
+    Args:
+      positions: electron positions to save, shape (num_devices, batch_per_device, num_electrons, 3)
+      step: current training step.
+      is_last_step: whether this is the final step.
+    """
+    local_positions = np.asarray(positions)
+    natom = local_positions.shape[-1] // 3
+    configs = local_positions.reshape(-1, natom, 3)
+    if pos_list is not None:
+      selected = np.asarray(list(pos_list), dtype=np.int64)
+      configs = configs[:, selected, :]
+      natom = configs.shape[1]
+    n_configs = configs.shape[0]
+
+    expected_shape = buffer_state['data'].shape[1:]
+    if expected_shape != (n_configs, natom, 3) or buffer_state['data'].dtype != configs.dtype:
+      raise ValueError('Incoming positions shape/dtype differs from writer initialization.')
+
+    def flush_buffer(finalize: bool = False, final_step: Optional[int] = None):
+      if buffer_state['count'] == 0:
+        if finalize:
+          if final_step is not None:
+            final_size = final_step + 1
+            if final_size < dset.shape[0]:
+              dset.resize(final_size, axis=0)
+            hf.attrs['finalized'] = 1
+            hf.flush()
+            hf.close()
+        return
+
+      start_step = buffer_state['start_step']
+      batch = buffer_state['data'][:buffer_state['count']]
+      end_step = start_step + buffer_state['count']
+
+      if end_step > dset.shape[0]:
+        new_size = dset.shape[0]
+        if new_size == 0:
+          new_size = init_step_capacity
+        while end_step > new_size:
+          new_size *= 2
+        dset.resize(new_size, axis=0)
+
+      dset[start_step:end_step] = batch
+
+      if finalize and final_step is not None:
+        final_size = final_step + 1
+        if final_size < dset.shape[0]:
+          dset.resize(final_size, axis=0)
+        hf.attrs['finalized'] = 1
+        hf.flush()
+        hf.close()
+
+      buffer_state['start_step'] = None
+      buffer_state['count'] = 0
+
+    # `step` is guaranteed to increase contiguously from 0.
+    if buffer_state['count'] == 0:
+      buffer_state['start_step'] = step
+
+    buffer_state['data'][buffer_state['count']] = configs
+    buffer_state['count'] += 1
+
+    if buffer_state['count'] >= buffer_steps or is_last_step:
+      flush_buffer(finalize=is_last_step, final_step=step)
+
+  return save_positions
+
+
 def find_last_checkpoint(ckpt_path: Optional[str] = None) -> Optional[str]:
   """Finds most recent valid checkpoint in a directory.
 
@@ -105,81 +226,6 @@ def get_restore_path(restore_path: Optional[str] = None) -> Optional[str]:
     ckpt_restore_path = None
   return ckpt_restore_path
 
-
-def save_positions(positions: jnp.ndarray,
-                   step: int,
-                   save_path: str,
-                   is_last_step: bool = False,
-                   pos_list: Optional[Sequence[int]] = None):
-  """Saves out the electron positions in unwrapped coordinates.
-
-  This simplified function always operates in per-process + stacked mode:
-  each process appends its local positions for the current step into a
-  per-process HDF5 file `pos{process}_all.h5` under dataset `positions`.
-
-  Args:
-    positions: electron positions to save, shape (num_devices, batch_per_device, num_electrons, 3)
-    step: current training step (unused for stacked mode but kept for API)
-    save_path: path to directory to save positions to.
-    pos_list: optional particle indices to save. If None, all particles are
-      saved.
-  """
-  process = jax.process_index()
-  os.makedirs(save_path, exist_ok=True)
-  #local_positions shape: (num_local_devices, batch_per_device, natom*3)
-  local_positions = np.asarray(positions)
-  natom = local_positions.shape[-1] // 3
-  configs = local_positions.reshape(-1, natom, 3) # shape (num_local_devices * batch_per_device, natom, 3)
-  if pos_list is not None:
-    selected = np.asarray(list(pos_list), dtype=np.int64)
-    configs = configs[:, selected, :]
-    natom = configs.shape[1]
-  n_configs = configs.shape[0]
-  
-  pos_filename = os.path.join(save_path, f'pos{process}_all.h5')
-  init_step_capacity = 1000
-  min_step_capacity = 1000
-  with h5py.File(pos_filename, 'a') as hf:
-    # Create dataset if missing. Dataset layout: (n_steps, n_configs, natom, 3)
-    if 'positions' not in hf:
-      init_capacity = max(init_step_capacity, 1)
-      chunk0 = min(init_capacity, min_step_capacity)
-      hf.create_dataset(
-          'positions',
-          shape=(init_capacity, n_configs, natom, 3),
-          maxshape=(None, n_configs, natom, 3),
-          chunks=(chunk0, n_configs, natom, 3),
-          compression='gzip',
-          dtype=configs.dtype)
-
-    dset = hf['positions']
-    # Ensure config/atom dimensions match. Allow swapped (natom, n_configs, 3)
-    expected_shape = (n_configs, natom, 3)
-    swapped_shape = (natom, n_configs, 3)
-    if dset.shape[1:] == expected_shape:
-      out_configs = configs
-    else:
-      logging.warning('Existing positions dataset has shape %s, expected %s or swapped %s.',
-                      dset.shape[1:], expected_shape, swapped_shape)
-      raise ValueError('Incompatible positions dataset shape.')
-
-    # Use provided `step` as the index along the step axis.
-    if step >= dset.shape[0]:
-      new_size = dset.shape[0]
-      if new_size == 0:
-        new_size = min_step_capacity
-      while step >= new_size:
-        new_size *= 2
-      dset.resize(new_size, axis=0)
-
-    dset[step] = out_configs
-
-    # If this is the last step, shrink dataset to exact length (step + 1)
-    if is_last_step:
-      final_size = step + 1
-      if final_size < dset.shape[0]:
-        dset.resize(final_size, axis=0)
-      hf.attrs['finalized'] = 1
 
 def save(save_path: str,
          t: int,
