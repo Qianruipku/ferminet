@@ -59,7 +59,7 @@ def default() -> ml_collections.ConfigDict:
           # 'vmc_overlap': minimize \sum_i <H_i> + \lambda \sum_ij <psi_i psi_j>
           'objective': 'vmc',
           'iterations': 1000000,  # number of iterations
-          'optimizer': 'kfac',  # one of adam, kfac, lamb, none
+          'optimizer': 'kfac',  # one of adam, kfac, lamb, muon, none
           'laplacian': 'default',  # of of default or folx (for forward lapl)
           # If 0, use standard vmap. If >0, the max batch size for batched_vmap
           'max_vmap_batch_size': 0,
@@ -120,6 +120,19 @@ def default() -> ml_collections.ConfigDict:
               'eps': 1.0e-8,
               'eps_root': 0.0,
           },
+            # Muon hyperparameters. See optax.contrib.muon for details.
+            'muon': {
+              # Newton-Schulz polynomial coefficients preset.
+              'ns_coeffs': (3.4445, -4.775, 2.0315),
+              'ns_steps': 5,
+              'beta': 0.95,
+              'eps': 1.0e-8,
+              'weight_decay': 0.0,
+              # Use Nesterov momentum.
+              'nesterov': True,
+              # Adaptive dual-norm scaling.
+              'adaptive': False,
+            },
       },
       'log': {
           'stats_frequency': 1,  # iterations between logging of stats
