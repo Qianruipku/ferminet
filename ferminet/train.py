@@ -896,6 +896,11 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         optax.scale_by_trust_ratio(),
         optax.scale_by_schedule(learning_rate_schedule),
         optax.scale(-1))
+  elif cfg.optim.optimizer == 'muon':
+    optimizer = optax.contrib.muon(
+        learning_rate = learning_rate_schedule,
+        **cfg.optim.muon,
+    )
   elif cfg.optim.optimizer == 'kfac':
     # Differentiate wrt parameters (argument 0)
     val_and_grad = jax.value_and_grad(evaluate_loss, argnums=0, has_aux=True)
