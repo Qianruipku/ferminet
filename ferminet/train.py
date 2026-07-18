@@ -1044,6 +1044,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     training_start_time = old_time = time.time()
     timestamps_queue = deque(maxlen=101)
     timestamps_queue.append(old_time)
+    save_positions_writer = None
+    if cfg.mcmc.save_positions:
+      save_positions_writer = checkpoint.create_save_positions_writer(
+          save_path='positions',
+          sample_positions=data.positions,
+          pos_list=cfg.mcmc.pos_list)
     for t in range(t_init, cfg.optim.iterations):
       sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
       data, params, opt_state, loss, aux_data, pmove = step(
@@ -1213,13 +1219,11 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
                        density_state=None, sharded_key=sharded_key, weighted_stats=weighted_stats,
                        sync_states=cfg.restart.sync_states, check_consistency=cfg.restart.check_consistency)
       
-      if cfg.mcmc.save_positions:
-        checkpoint.save_positions(
+      if save_positions_writer is not None:
+        save_positions_writer(
             data.positions,
             t,
-            "positions",
-            t == cfg.optim.iterations - 1,
-            pos_list=cfg.mcmc.pos_list)
+            t == cfg.optim.iterations - 1)
 
     # Training completed - log timing summary
     total_training_time = time.time() - training_start_time
