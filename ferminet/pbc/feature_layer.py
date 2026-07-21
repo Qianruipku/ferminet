@@ -93,7 +93,7 @@ def make_pbc_feature_layer(
     ae_feat_dim = feature_order1 * 2 * ndim
     ee_feat_dim = feature_order2 * 2 * ndim
     if include_r_ae:
-      return (natoms * (ae_feat_dim + 1), ee_feat_dim + 1), {}
+      return (natoms * (ae_feat_dim + feature_order1), ee_feat_dim + 1), {}
     else:
       return (natoms * ae_feat_dim, ee_feat_dim + 1), {}
 
@@ -114,7 +114,10 @@ def make_pbc_feature_layer(
       ee_feats.append(jnp.cos(order * 2 * jnp.pi * s_ee))
     ee = jnp.concatenate(ee_feats, axis=-1)
     # Distance features defined on orthonormal projections
-    r_ae = periodic_norm(lattice_metric, s_ae)
+    r_ae_list = []
+    for order in range(1, feature_order1 + 1):
+      r_ae_list.append(periodic_norm(lattice_metric, order * s_ae))
+    r_ae = jnp.stack(r_ae_list, axis=-1)
     if rescale_inputs:
       r_ae = jnp.log(1 + r_ae)
     # Don't take gradients through |0|
@@ -123,7 +126,7 @@ def make_pbc_feature_layer(
     r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
 
     if include_r_ae:
-      ae_features = jnp.concatenate((r_ae[..., None], ae), axis=2)
+      ae_features = jnp.concatenate((r_ae, ae), axis=2)
     else:
       ae_features = ae
     ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
