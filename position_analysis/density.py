@@ -104,6 +104,7 @@ def read_and_plot(folder: str,
                   coord_axes: Sequence[int] = (0, 1), bins: int = 200,
                   out: Optional[str] = None,
                   electrons: Optional[Sequence[int]] = None,
+                  batch_indices: Optional[Sequence[int]] = None,
                   lattice_type: str = 'sc', lattice_constant: float = 1.0,
                   tile: Optional[int] = None,
                   max_chunk: int = 200000) -> None:
@@ -119,28 +120,31 @@ def read_and_plot(folder: str,
     else:
       tile = 3
 
-  def _positions_to_samples(positions: np.ndarray) -> np.ndarray:
-    """Convert saved positions into shape (samples, Na, 3).
-
-    Handles inputs where the last axis is either 3 (already (..., Na, 3))
-    or flattened Na*3. Collapses all leading axes except the last two into
-    a single samples axis.
-    """
+  def _positions_to_step_batch(positions: np.ndarray) -> np.ndarray:
+    """Convert saved positions into shape (nsteps, nbatch, nelec, 3)."""
     arr = np.asarray(positions)
-    # If last dim is flattened coords
+
     if arr.ndim >= 1 and arr.shape[-1] % 3 == 0 and arr.shape[-1] != 3:
-      Na = arr.shape[-1] // 3
-      arr = arr.reshape(*arr.shape[:-1], Na, 3)
-    # Now ensure last dim is 3
-    if arr.ndim < 2 or arr.shape[-1] != 3:
+      nelec = arr.shape[-1] // 3
+      arr = arr.reshape(*arr.shape[:-1], nelec, 3)
+
+    if arr.ndim < 4 or arr.shape[-1] != 3:
       raise ValueError('positions do not have a final coordinate dimension of size 3')
-    # Collapse leading dims into samples; assume electron axis is second-last
-    # after reshaping coords to Na x 3 when necessary.
+
+    if arr.ndim == 5:
+      # (nproc, nsteps, batch_local, nelec, 3) -> (nsteps, nproc*batch_local, nelec, 3)
+      nproc, nsteps, batch_local, nelec, _ = arr.shape
+      return arr.transpose(1, 0, 2, 3, 4).reshape(nsteps, nproc * batch_local, nelec, 3)
+
+    if arr.ndim == 4:
+      # (nsteps, batch, nelec, 3)
+      return arr
+
+    # Fallback: collapse all leading dims except the last two into a sample axis.
     lead = arr.shape[:-2]
     samples = int(np.prod(lead))
-    Na = arr.shape[-2]
-    reshaped = arr.reshape(samples, Na, 3)
-    return reshaped
+    nelec = arr.shape[-2]
+    return arr.reshape(samples, 1, nelec, 3)
   # lattice matrix used to fold positions into the primitive cell
   L = _get_lattice_matrix(lattice_type, float(lattice_constant))
   cell_sizes = np.array([L[0, 0], L[1, 1], L[2, 2]])
@@ -251,8 +255,18 @@ def read_and_plot(folder: str,
     print(f'Processing file {idx+1}/{len(files)}: {f}')
     positions = read_positions(f)
     print(f'  loaded positions shape: {positions.shape}')
-    samples = _positions_to_samples(positions)
-    print(f'  converted to samples shape: {samples.shape}')
+    step_batch = _positions_to_step_batch(positions)
+    print(f'  converted to (nsteps, batch, nelec, 3): {step_batch.shape}')
+    if batch_indices is not None:
+      sel = np.asarray(batch_indices, dtype=np.int64)
+      if sel.size > 0 and (sel.min() < 0 or sel.max() >= step_batch.shape[1]):
+        raise ValueError(
+            f'batch_indices out of bounds for file {f}: valid range [0, {step_batch.shape[1] - 1}]')
+      step_batch = step_batch[:, sel, :, :]
+      print(f'  selected batches shape: {step_batch.shape}')
+
+    samples = step_batch.reshape(-1, step_batch.shape[2], 3)
+    print(f'  flattened to samples shape: {samples.shape}')
     if electrons is not None:
       samples = samples[:, electrons, :]
     # prepare Cartesian points and compute points for histogram
@@ -300,6 +314,8 @@ def main():
   # `separate` option removed; streaming per-process processing is always used.
   p.add_argument('--electrons', type=str, default=None,
                  help='comma-separated electron indices or ranges (e.g. 0,2,5-7)')
+  p.add_argument('--batch-indices', type=str, default=None,
+                 help='comma-separated batch indices or ranges (e.g. 0,2,5-7)')
   p.add_argument('--out', type=str, default=None, help='output png path')
   p.add_argument('--lattice-type', type=str, default='sc', choices=['sc', 'bcc', 'fcc'],
                  help='lattice type for folding into primitive cell (sc, bcc, fcc)')
@@ -326,6 +342,7 @@ def main():
     return parts
 
   electrons = _parse_electrons(args.electrons)
+  batch_indices = _parse_electrons(args.batch_indices)
   def _parse_proj(s: str):
     toks = [t.strip() for t in s.split(',') if t.strip()]
     if len(toks) != 2:
@@ -335,6 +352,7 @@ def main():
   read_and_plot(args.folder,
                 coord_axes=coord_axes, bins=args.bins, out=args.out,
                 electrons=electrons,
+                batch_indices=batch_indices,
                 lattice_type=args.lattice_type, lattice_constant=args.lattice_constant,
                 tile=args.tile, max_chunk=args.max_chunk)
 
