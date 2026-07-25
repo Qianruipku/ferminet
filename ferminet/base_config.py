@@ -184,6 +184,12 @@ def default() -> ml_collections.ConfigDict:
             'apply_pbc': False,
             # Array of shape (ndim, ndim) with the lattice vectors of the simulation cell
             'lattice_vectors': None,
+            # If use small primitive cell, apply translation symmetry to the wavefunction. If False, use the full simulation cell.
+            'translation_symm': False,
+            # Primitive lattice vectors
+            'primitive_vectors': None,
+            # Primitive atoms in the simulation cell. If None, all atoms are assumed to be primitive.
+            'primitive_atoms_id': None,
             # Order of features for the electron-nuclear distances
             'feature_order1': 1,
             # Order of features for the electron-electron distances

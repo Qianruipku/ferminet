@@ -19,7 +19,7 @@ Spencer, J.S. and Foulkes, W.M.C., 2022. Discovering Quantum Phase Transitions
 with Fermionic Neural Networks. arXiv preprint arXiv:2202.05183.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Sequence
 
 import chex
 from ferminet import networks
@@ -65,6 +65,9 @@ def make_pbc_feature_layer(
   ndim: int = 3,
   rescale_inputs: bool = False,
   lattice: jnp.ndarray = jnp.eye(3),
+  translation_symm: bool = False,
+  primitive_vectors: Optional[jnp.ndarray] = None,
+  primitive_atoms_id: Optional[Sequence[int]] = None,
   include_r_ae: bool = True,
   feature_order1: int = 1,
   feature_order2: int = 1,
@@ -79,6 +82,7 @@ def make_pbc_feature_layer(
         the OBC case, we do not rescale r_ee as well.
       lattice: Matrix whose columns are the primitive lattice vectors of the
         system, shape (ndim, ndim).
+      primitive_vectors: primitive lattice vectors
       include_r_ae: Flag to enable electron-atom distance features. Set to False
         to avoid cusps with ghost atoms in, e.g., homogeneous electron gas.
   """
@@ -87,19 +91,44 @@ def make_pbc_feature_layer(
 
   # Calculate reciprocal vectors, factor 2pi omitted
   reciprocal_vecs = jnp.linalg.inv(lattice)
+  if primitive_vectors is not None:
+    primitive_reciprocal = jnp.linalg.inv(primitive_vectors)
+  else:
+    primitive_reciprocal = reciprocal_vecs
+
   lattice_metric = lattice.T @ lattice
+  lattice_metric_primitive = primitive_vectors.T @ primitive_vectors
+  natom_primitive = len(primitive_atoms_id) if primitive_atoms_id is not None else natoms
 
   def init() -> Tuple[Tuple[int, int], networks.Param]:
-    ae_feat_dim = feature_order1 * 2 * ndim
-    ee_feat_dim = feature_order2 * 2 * ndim
-    if include_r_ae:
-      return (natoms * (ae_feat_dim + feature_order1), ee_feat_dim + 1), {}
+    ee_feat_dim = feature_order2 * 2 * ndim + 1
+    if not translation_symm:
+      ae_feat_dim = feature_order1 * 2 * ndim  * natoms
+      if include_r_ae:
+        ae_feat_dim += feature_order1 * natoms
     else:
-      return (natoms * ae_feat_dim, ee_feat_dim + 1), {}
+      ae_feat_dim = feature_order1 * 2 * ndim  * natoms + natom_primitive * ndim
+      if include_r_ae:
+        ae_feat_dim += feature_order1 * natoms + natom_primitive
+        
+    return (ae_feat_dim, ee_feat_dim), {}
 
-  def apply(ae, r_ae, ee, r_ee) -> Tuple[jnp.ndarray, jnp.ndarray]:
+  def apply(ae, r_ae, ee, r_ee, **params) -> Tuple[jnp.ndarray, jnp.ndarray]:
     # One e features in phase coordinates, (s_ae)_i = k_i . ae
     s_ae = jnp.einsum('il,jkl->jki', reciprocal_vecs, ae)
+    # If primitive reciprocal vectors provided, compute s_ae_primitive
+    ae_feats_symm = None
+    r_ae_feats_symm = None
+    if translation_symm:
+      if primitive_atoms_id is not None:
+        ae_primitive = ae[:, primitive_atoms_id, :]
+      else:
+        ae_primitive = ae
+      s_ae_primitive = jnp.einsum('il,jkl->jki', primitive_reciprocal, ae_primitive) # (ne, nprim, 3)
+      s = jnp.cos(2 * jnp.pi * s_ae_primitive)
+      ae_feats_symm = jnp.reshape(s, [jnp.shape(s)[0], -1])  # (ne, nprim*3)
+      r_ae_feats_symm = periodic_norm(lattice_metric_primitive, s_ae_primitive)  # (ne, nprim)
+
     # Two e features in phase coordinates
     s_ee = jnp.einsum('il,jkl->jki', reciprocal_vecs, ee)
     # Periodized features
@@ -107,7 +136,10 @@ def make_pbc_feature_layer(
     for order in range(1, feature_order1 + 1):
       ae_feats.append(jnp.sin(order * 2 * jnp.pi * s_ae))
       ae_feats.append(jnp.cos(order * 2 * jnp.pi * s_ae))
-    ae = jnp.concatenate(ae_feats, axis=-1)
+    if ae_feats:
+      ae = jnp.concatenate(ae_feats, axis=-1)
+    else:
+      ae = jnp.zeros(s_ae.shape[:-1] + (0,), dtype=s_ae.dtype)
     ee_feats = []
     for order in range(1, feature_order2 + 1):
       ee_feats.append(jnp.sin(order * 2 * jnp.pi * s_ee))
@@ -117,7 +149,10 @@ def make_pbc_feature_layer(
     r_ae_list = []
     for order in range(1, feature_order1 + 1):
       r_ae_list.append(periodic_norm(lattice_metric, order * s_ae))
-    r_ae = jnp.stack(r_ae_list, axis=-1)
+    if r_ae_list:
+      r_ae = jnp.stack(r_ae_list, axis=-1)
+    else:
+      r_ae = jnp.zeros(s_ae.shape[:-1] + (0,), dtype=s_ae.dtype)
     if rescale_inputs:
       r_ae = jnp.log(1 + r_ae)
     # Don't take gradients through |0|
@@ -130,6 +165,11 @@ def make_pbc_feature_layer(
     else:
       ae_features = ae
     ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
+    if r_ae_feats_symm is not None:
+      ae_features = jnp.concatenate((ae_features, r_ae_feats_symm), axis=-1)
+    # concatenate symmetry embedding if computed
+    if ae_feats_symm is not None:
+      ae_features = jnp.concatenate((ae_features, ae_feats_symm), axis=-1)
     ee_features = jnp.concatenate((r_ee[..., None], ee), axis=2)
     return ae_features, ee_features
 
