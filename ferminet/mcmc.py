@@ -92,6 +92,8 @@ def mh_update(
     atoms=None,
     blocks=1,
     i=0,
+    mix_width: float = 1.0,
+    mix_prob: float = 0.05,
 ):
   """Performs one Metropolis-Hastings step using an all-electron move.
 
@@ -127,8 +129,13 @@ def mh_update(
   key, subkey = jax.random.split(key)
   start_idx = 0
   x1 = data.positions
+  std_large = jnp.asarray(mix_width)
+  p_large = mix_prob
   if jnp.ndim(stddev) == 0:
-    x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
+    key_choice, key_noise = jax.random.split(subkey)
+    use_large = jax.random.uniform(key_choice) < p_large
+    sigma = jnp.where(use_large, std_large, stddev)
+    x2 = x1 + sigma * jax.random.normal(key_noise, shape=x1.shape)  # proposal
     lp_2 = 2.0 * f(
         params, x2, data.spins, data.atoms, data.charges
     )  # log prob of proposal
@@ -139,10 +146,11 @@ def mh_update(
     for species_idx, nspecies in enumerate(nspins):
       species_width = stddev[species_idx]
       species_shape = (x1.shape[0], nspecies * ndim)
-
+      key_choice, key_noise = jax.random.split(subkey)
+      use_large = jax.random.uniform(key_choice) < p_large
+      sigma = jnp.where(use_large, std_large, species_width)
       x2 = x1.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].add(
-          species_width *
-          jax.random.normal(subkey, shape=species_shape))  # proposal
+          sigma * jax.random.normal(key_noise, shape=species_shape))  # proposal
       lp_2 = 2. * f(params, x2, data.spins, data.atoms, data.charges)  # log prob of proposal
       ratio = lp_2 - lp_1
 
@@ -169,6 +177,8 @@ def mh_block_update(
     atoms=None,
     blocks=1,
     i=0,
+    mix_width: float = 1.0,
+    mix_prob: float = 0.05,
 ):
   """Performs one Metropolis-Hastings step for a block of electrons.
 
@@ -198,7 +208,8 @@ def mh_block_update(
   """
   if atoms is not None:
     raise NotImplementedError("Asymmetric moves not implemented")
-
+  p_large = mix_prob
+  std_large = jnp.asarray(mix_width)
   key, subkey = jax.random.split(key)
   batch_size = data.positions.shape[0]
   start_idx = 0
@@ -215,8 +226,11 @@ def mh_block_update(
     )
     ii = i % blocks
     # update block ii
+    key_choice, key_noise = jax.random.split(subkey)
+    use_large = jax.random.uniform(key_choice) < p_large
+    sigma = jnp.where(use_large, std_large, species_width)
     x2 = x1.at[:, ii].add(
-        species_width * jax.random.normal(subkey, shape=x1[:, ii].shape))
+        sigma * jax.random.normal(key_noise, shape=x1[:, ii].shape))
     x2 = jnp.reshape(x2, [batch_size, -1])
     # re-implant block into original array
     if pad > 0:
@@ -243,7 +257,9 @@ def make_mcmc_step(batch_network,
                    steps=10,
                    atoms=None,
                    sample_all=True,
-                   blocks=1):
+                   blocks=1,
+                   mix_width: float = 1.0,
+                   mix_prob: float = 0.05):
   """Creates the MCMC step function.
 
   Args:
@@ -286,6 +302,8 @@ def make_mcmc_step(batch_network,
           batch_network,
           *x,
           stddev=width,
+          mix_width=mix_width,
+          mix_prob=mix_prob,
           nspins=nspins,
           ndim=ndim,
           atoms=atoms,
@@ -321,6 +339,7 @@ def update_mcmc_width(
     adapt_frequency: int,
     pmove: jnp.ndarray,
     pmoves: np.ndarray,
+    min_width: float = 1e-3,
     max_width: float = 20.0,
     apply_pbc: bool = False,
     pmove_max: float = 0.55,
@@ -363,4 +382,5 @@ def update_mcmc_width(
       pmoves[:,t%adapt_frequency] = pmove
   if apply_pbc:
     width = jnp.minimum(width, max_width)
+    width = jnp.maximum(width, min_width)
   return width, pmoves

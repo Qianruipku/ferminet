@@ -747,6 +747,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       atoms=atoms_to_mcmc,
       sample_all= cfg.mcmc.sample_all,
       blocks=cfg.mcmc.blocks * num_states,
+      mix_width=cfg.mcmc.mix_width,
+      mix_prob=cfg.mcmc.mix_prob,
   )
   # Construct loss and optimizer
   laplacian_method = cfg.optim.get('laplacian', 'default')
@@ -1140,7 +1142,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(
-          t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves, max_width, cfg.system.pbc.apply_pbc)
+        t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves,
+        cfg.mcmc.min_width, max_width, cfg.system.pbc.apply_pbc)
 
       if cfg.debug.check_nan:
         tree = {'params': params}

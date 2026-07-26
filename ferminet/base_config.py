@@ -250,6 +250,13 @@ def default() -> ml_collections.ConfigDict:
           # Width of Gaussian used for random moves for RMW or step size for
           # HMC.
           'move_width': 0.02,
+          # Minimum allowed MCMC step width.
+          'min_width': 1e-3,
+          # Standard deviation used for large-step proposals in the mixture
+          # proposal. Can be overridden in cfg.mcmc.mix_width. Default 1.0.
+          'mix_width': 1.0,
+          # Probability of taking a large jump in the mixture proposal.
+          'mix_prob': 0.05,
           # Number of steps after which to update the adaptive MCMC step size
           'adapt_frequency': 100,
           'use_hmc': False,  # Use HMC (True) or Random Walk Metropolis (False)

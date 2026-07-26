@@ -382,7 +382,8 @@ def make_density_matrix(
                                                   state.move_width,
                                                   cfg.mcmc.adapt_frequency,
                                                   rprime_pmove,
-                                                  state.pmove)
+                                                  state.pmove,
+                                                  cfg.mcmc.min_width)
     return DensityState(t=state.t+1,
                         positions=rprime_data.positions,
                         probabilities=rprime_probs,

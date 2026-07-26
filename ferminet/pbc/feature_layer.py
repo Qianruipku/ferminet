@@ -91,10 +91,9 @@ def make_pbc_feature_layer(
 
   # Calculate reciprocal vectors, factor 2pi omitted
   reciprocal_vecs = jnp.linalg.inv(lattice)
-  if primitive_vectors is not None:
-    primitive_reciprocal = jnp.linalg.inv(primitive_vectors)
-  else:
-    primitive_reciprocal = reciprocal_vecs
+  if primitive_vectors is None:
+    primitive_vectors = lattice
+  primitive_reciprocal = jnp.linalg.inv(primitive_vectors)
 
   lattice_metric = lattice.T @ lattice
   lattice_metric_primitive = primitive_vectors.T @ primitive_vectors
