@@ -106,6 +106,7 @@ def read_and_plot(folder: str,
                   electrons: Optional[Sequence[int]] = None,
                   batch_indices: Optional[Sequence[int]] = None,
                   lattice_type: str = 'sc', lattice_constant: float = 1.0,
+                  start: Optional[int] = None, end: Optional[int] = None,
                   tile: Optional[int] = None,
                   max_chunk: int = 200000) -> None:
   """Read positions and plot density for all processes.
@@ -253,7 +254,7 @@ def read_and_plot(folder: str,
   print(f'Found {len(files)} pos*_all.h5 files in {folder!r}')
   for idx, f in enumerate(files):
     print(f'Processing file {idx+1}/{len(files)}: {f}')
-    positions = read_positions(f)
+    positions = read_positions(f, start=start, end=end)
     print(f'  loaded positions shape: {positions.shape}')
     step_batch = _positions_to_step_batch(positions)
     print(f'  converted to (nsteps, batch, nelec, 3): {step_batch.shape}')
@@ -316,6 +317,10 @@ def main():
                  help='comma-separated electron indices or ranges (e.g. 0,2,5-7)')
   p.add_argument('--batch-indices', type=str, default=None,
                  help='comma-separated batch indices or ranges (e.g. 0,2,5-7)')
+  p.add_argument('--start', type=int, default=None,
+                 help='Start step index (inclusive)')
+  p.add_argument('--end', type=int, default=None,
+                 help='End step index (inclusive)')
   p.add_argument('--out', type=str, default=None, help='output png path')
   p.add_argument('--lattice-type', type=str, default='sc', choices=['sc', 'bcc', 'fcc'],
                  help='lattice type for folding into primitive cell (sc, bcc, fcc)')
@@ -354,6 +359,7 @@ def main():
                 electrons=electrons,
                 batch_indices=batch_indices,
                 lattice_type=args.lattice_type, lattice_constant=args.lattice_constant,
+                start=args.start, end=args.end,
                 tile=args.tile, max_chunk=args.max_chunk)
 
 

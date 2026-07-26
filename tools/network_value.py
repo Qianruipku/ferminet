@@ -36,8 +36,6 @@ def input_params():
 
 def check_params(params, cfg):
     assert(len(params['envelope']) == len(cfg.system.particles))
-    nk_read = params['envelope'][0]['sigma'].shape[0] // 2
-    assert(nk_read == sum(cfg.system.particles))
     cfg.network.determinants = params['envelope'][0]['sigma'].shape[1] // cfg.system.particles[0]
 
     return cfg
@@ -81,7 +79,12 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             ndim=cfg.system.ndim,
             rescale_inputs=cfg.network.get('rescale_inputs', False),
             lattice=cfg.system.pbc.lattice_vectors,
-            include_r_ae=include_r_ae
+            translation_symm=cfg.system.pbc.translation_symm,
+            primitive_vectors=cfg.system.pbc.get('primitive_vectors', None),
+            primitive_atoms_id=cfg.system.pbc.get('primitive_atoms_id', None),
+            include_r_ae=include_r_ae,
+            feature_order1=cfg.system.pbc.get('feature_order1', 1),
+            feature_order2=cfg.system.pbc.get('feature_order2', 1),
         )
     
     # Create envelope function
@@ -168,15 +171,15 @@ def main_example():
     network, atoms, charges = create_network_from_config(cfg)
     
     # 4. Prepare input data (example)
-    spins = data.spins[0, 0]
-    positions = data.positions[0, 0]
-    charges = data.charges[0, 0]
-    atoms = data.atoms[0, 0]
+    spins = data.spins[0, 0, 0]
+    positions = data.positions[0, 0, 0]
+    charges = data.charges[0, 0, 0]
+    atoms = data.atoms[0, 0, 0]
 
-    batch_spins = data.spins[0]
-    batch_positions = data.positions[0]
-    batch_charges = data.charges[0]
-    batch_atoms = data.atoms[0]
+    batch_spins = data.spins[0, 0]
+    batch_positions = data.positions[0, 0]
+    batch_charges = data.charges[0, 0]
+    batch_atoms = data.atoms[0, 0]
 
     # 5. Compute wavefunction value
     wavefunction_value = None
