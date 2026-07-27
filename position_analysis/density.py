@@ -105,6 +105,7 @@ def read_and_plot(folder: str,
                   out: Optional[str] = None,
                   electrons: Optional[Sequence[int]] = None,
                   batch_indices: Optional[Sequence[int]] = None,
+                  proc_index: Optional[int] = None,
                   lattice_type: str = 'sc', lattice_constant: float = 1.0,
                   start: Optional[int] = None, end: Optional[int] = None,
                   tile: Optional[int] = None,
@@ -249,6 +250,12 @@ def read_and_plot(folder: str,
   files = _find_pos_files(folder)
   if not files:
     raise FileNotFoundError(f'No pos*_all.h5 files found in {folder!r}')
+  if proc_index is not None:
+    target_name = f'pos{int(proc_index)}_all.h5'
+    files = [f for f in files if os.path.basename(f) == target_name]
+    if not files:
+      raise FileNotFoundError(
+          f'No file named {target_name!r} found in {folder!r}')
   H = None
   xedges = yedges = None
   print(f'Found {len(files)} pos*_all.h5 files in {folder!r}')
@@ -317,6 +324,8 @@ def main():
                  help='comma-separated electron indices or ranges (e.g. 0,2,5-7)')
   p.add_argument('--batch-indices', type=str, default=None,
                  help='comma-separated batch indices or ranges (e.g. 0,2,5-7)')
+  p.add_argument('--proc-index', type=int, default=None,
+                 help='only read one process file: pos{proc_index}_all.h5')
   p.add_argument('--start', type=int, default=None,
                  help='Start step index (inclusive)')
   p.add_argument('--end', type=int, default=None,
@@ -358,6 +367,7 @@ def main():
                 coord_axes=coord_axes, bins=args.bins, out=args.out,
                 electrons=electrons,
                 batch_indices=batch_indices,
+                proc_index=args.proc_index,
                 lattice_type=args.lattice_type, lattice_constant=args.lattice_constant,
                 start=args.start, end=args.end,
                 tile=args.tile, max_chunk=args.max_chunk)

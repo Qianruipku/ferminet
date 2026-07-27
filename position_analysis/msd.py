@@ -137,12 +137,20 @@ def analyze_msd(path: str,
                 out: Optional[str] = None,
                 batch_indices: Optional[Sequence[int]] = None,
                 electrons: Optional[Sequence[int]] = None,
+                proc_index: Optional[int] = None,
                 start: Optional[int] = None,
                 end: Optional[int] = None,
                 lattice_type: str = 'sc',
                 lattice_constant: float = 1.0,
                 cell_matrix: Optional[np.ndarray] = None) -> None:
-  raw = np.asarray(read_positions(path, start=start, end=end))
+  read_path = path
+  if proc_index is not None and os.path.isdir(path):
+    target = os.path.join(path, f'pos{int(proc_index)}_all.h5')
+    if not os.path.isfile(target):
+      raise FileNotFoundError(
+          f'No file named {os.path.basename(target)!r} found in {path!r}')
+    read_path = target
+  raw = np.asarray(read_positions(read_path, start=start, end=end))
   view = _to_step_batch_view(raw)
   nsteps, nbatch, nelec, _ = view.shape
   print(f'Loaded positions shape(raw): {raw.shape}')
@@ -195,6 +203,8 @@ def main() -> None:
                  help='Comma/range batch indices to select, e.g. 0,3,5-8')
   p.add_argument('--electrons', type=str, default=None,
                  help='Comma/range electron indices to select, e.g. 0,2,5-8')
+  p.add_argument('--proc-index', type=int, default=None,
+                 help='Only read one process file when path is a folder: pos{proc_index}_all.h5')
   p.add_argument('--start', type=int, default=None, help='Start step index (inclusive)')
   p.add_argument('--end', type=int, default=None, help='End step index (inclusive)')
   p.add_argument('--lattice-type', type=str, default='sc', choices=['sc', 'bcc', 'fcc'],
@@ -252,6 +262,7 @@ def main() -> None:
               out=args.out,
               batch_indices=batch_indices,
               electrons=electrons,
+              proc_index=args.proc_index,
               start=args.start,
               end=args.end,
               lattice_type=args.lattice_type,
