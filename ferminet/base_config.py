@@ -256,7 +256,7 @@ def default() -> ml_collections.ConfigDict:
           # proposal. Can be overridden in cfg.mcmc.mix_width. Default 1.0.
           'mix_width': 1.0,
           # Probability of taking a large jump in the mixture proposal.
-          'mix_prob': 0.05,
+          'mix_prob': 0.0,
           # Number of steps after which to update the adaptive MCMC step size
           'adapt_frequency': 100,
           'use_hmc': False,  # Use HMC (True) or Random Walk Metropolis (False)
