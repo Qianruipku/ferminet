@@ -448,6 +448,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         include_r_ae=include_r_ae,
         feature_order1=cfg.system.pbc.get('feature_order1', 1),
         feature_order2=cfg.system.pbc.get('feature_order2', 1),
+        smooth_ree=cfg.system.pbc.get('smooth_ree', False),
     )
 
   if cfg.network.make_envelope_fn:

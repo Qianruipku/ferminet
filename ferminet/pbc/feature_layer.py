@@ -27,7 +27,8 @@ import jax.numpy as jnp
 from ferminet.utils import Lattice
 
 
-def periodic_norm(metric: jnp.ndarray, scaled_r: jnp.ndarray) -> jnp.ndarray:
+def periodic_norm(metric: jnp.ndarray, scaled_r: jnp.ndarray,
+                  smooth: bool = False) -> jnp.ndarray:
   """Returns the periodic norm of a set of vectors.
 
   Args:
@@ -41,6 +42,8 @@ def periodic_norm(metric: jnp.ndarray, scaled_r: jnp.ndarray) -> jnp.ndarray:
   b = jnp.sin(2 * jnp.pi * scaled_r)
   cos_term = jnp.einsum('...m,mn,...n->...', a, metric, a)
   sin_term = jnp.einsum('...m,mn,...n->...', b, metric, b)
+  if smooth:
+    return (1 / (2 * jnp.pi))**2 * (cos_term + sin_term)
   return (1 / (2 * jnp.pi)) * jnp.sqrt(cos_term + sin_term)
 
 def put_in_box(r: jnp.ndarray, lat: Lattice) -> jnp.ndarray:
@@ -71,6 +74,7 @@ def make_pbc_feature_layer(
   include_r_ae: bool = True,
   feature_order1: int = 1,
   feature_order2: int = 1,
+  smooth_ree: bool = False,
 ) -> networks.FeatureLayer:
   """Returns the init and apply functions for periodic features.
 
@@ -157,7 +161,7 @@ def make_pbc_feature_layer(
     # Don't take gradients through |0|
     n = ee.shape[0]
     s_ee += jnp.eye(n)[..., None]
-    r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
+    r_ee = periodic_norm(lattice_metric, s_ee, smooth_ree) * (1.0 - jnp.eye(n))
 
     if include_r_ae:
       ae_features = jnp.concatenate((r_ae, ae), axis=2)
