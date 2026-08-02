@@ -46,6 +46,7 @@ import ferminet.pbc.hamiltonian as pbc_hamiltonian
 import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
 from ferminet.observable.apmd import write_apmd_1d
+from ferminet.observable.densitymatrix import RadialTwoBodyDensity
 import jax
 from jax.experimental import multihost_utils
 import jax.numpy as jnp
@@ -633,7 +634,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   if cfg.observables.density:
     (observable_states['density'],
      density_update,
-     observable_fns['density']) = observables.make_density_matrix(
+     observable_fns['density']) = observables.make_one_body_density_matrix_in_mo_basis(
          signed_network, data.positions, cfg, density_state_ckpt)
     # Because the density matrix can be quite large, even without excited
     # states, we always save it directly to .npy file instead of writing to CSV
@@ -700,6 +701,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     if os.path.getsize(ann_rate_path) == 0:
       ann_rate_file.write('#step  Gamma(ns^-1)\n')
       ann_rate_file.flush()
+
+  # Initialize two-body radial estimator if requested (separate switch)
+  if getattr(cfg.observables, 'two_body_dm', None) and cfg.observables.two_body_dm.calculate:
+    two_body_param = cfg.observables.two_body_dm.param
+    two_body_dm = RadialTwoBodyDensity(lattice=lat, nspins=nspins, **two_body_param)
+    two_body_dm.signed_network = signed_network
   
   # Initialisation done. We now want to have different PRNG streams on each
   # device. Shard the key over devices
@@ -1097,6 +1104,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             subkeys, params, data, observable_states['density'])
       if cfg.observables.rho_r.calculate:
         observable_states['rho_r'] = observable_data['rho_r']
+      if getattr(cfg.observables, 'two_body_dm', None) and cfg.observables.two_body_dm.calculate:
+        two_body_dm(params, data)
       if cfg.observables.pcf.calculate:
         observable_states['pcf'] = observable_data['pcf']
         freq = cfg.observables.pcf.save_freq
@@ -1113,6 +1122,10 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
             np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
             pcf_file.close()
+
+      if cfg.observables.two_body_dm.calculate:
+        two_body_dm.save(ckpt_save_path, t, cfg.optim.iterations)
+        
       if cfg.observables.apmd.calculate:
         observable_states['apmd'] = observable_data['apmd']
         freq = cfg.observables.apmd.save_freq
@@ -1255,7 +1268,5 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         dipole_matrix_file.close()
     if cfg.observables.density:
       density_matrix_file.close()
-    if cfg.observables.rho_r.calculate:
-      rho_r_file.close()
     if cfg.observables.ann_rate.calculate:
       ann_rate_file.close() 

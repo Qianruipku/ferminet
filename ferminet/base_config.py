@@ -376,12 +376,30 @@ def default() -> ml_collections.ConfigDict:
       'observables': {
           's2': False,  # spin magnitude
           'density': False,  # density matrix calculated by HF wavefunction
+          'compute_condensate_fraction': False,
           'density_basis': 'def2-tzvpd',  # basis used for DM calculation
           'dipole': False,  # dipole moment
           'rho_r': { #electron density in real space
             'calculate': False,
             'lim': 10.,
             'nbins': 256,
+          },
+          'two_body_dm': {
+            'calculate': False,
+            'param': {
+              'save_freq': 1000,
+              # radial grid parameters
+              'rmax': 10.,
+              'nbins': 50,
+              # how many random directions per bin for rotational averaging
+              'n_dirs': 1,
+              # fraction of possible pairs to sample each call (0-1)
+              'fraction_pairs': 0.05,
+              # which species pair to consider; tuple (ia, ib)
+              'pair_type': (0, 1),
+              # whether to compute condensate fraction
+              'compute_condensate_fraction': True,
+            },
           },
           'pcf':{  # pair correlation function
             'calculate': False,

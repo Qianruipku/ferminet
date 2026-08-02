@@ -276,13 +276,19 @@ def make_dipole(
   return dipole_estimator
 
 
-def make_density_matrix(
+def make_one_body_density_matrix_in_mo_basis(
     signed_network: networks.FermiNetLike,
     pos: jnp.ndarray,
     cfg: ml_collections.ConfigDict,
     ckpt_state: Optional[DensityState] = None) -> Tuple[
         DensityState, DensityUpdate, Observable]:
-  """Evaluates the density matrix of a wavefunction.
+  """Evaluates the one-body reduced density matrix (1-RDM) in an MO basis.
+
+  This constructs Monte Carlo estimates of the one-electron reduced density
+  matrix expressed in the Hartree–Fock molecular orbital (MO) basis. Returns
+  the initial `DensityState` for the parallel MCMC chain, a `DensityUpdate`
+  function that advances the chain, and an `Observable` that computes a single
+  Monte Carlo sample of the 1-RDM (matrix elements rho_ij in the MO basis).
 
   Args:
     signed_network: network callable which takes the network parameters and a
@@ -773,3 +779,7 @@ def cal_ann_rate(
     return state * prefactor * n_electrons / Volume
 
   return init_state, ann_rate_estimator
+
+
+# Backwards-compatible alias: preserve old name
+make_density_matrix = make_one_body_density_matrix_in_mo_basis
