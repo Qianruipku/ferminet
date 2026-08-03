@@ -168,9 +168,59 @@ class RadialTwoBodyDensity:
     # shift_vec of shape (nbins, n_sample, 3) = unit_dirs * bin_center
     n_sample = max(1, int(self.n_dirs))
     key, subkey_dirs = jax.random.split(self.key)
-    raw_dirs = jax.random.normal(subkey_dirs, (self.nbins, n_sample, 3))
-    norms = jnp.linalg.norm(raw_dirs, axis=2, keepdims=True)
-    dirs = raw_dirs / (norms + 1e-12)
+
+    def _base_unit_points(n):
+      # explicit small symmetric sets
+      if n == 1:
+        return jnp.array([[0.0, 0.0, 1.0]])
+      if n == 2:
+        return jnp.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
+      if n == 6:
+        # Octahedron vertices
+        return jnp.array([
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ])
+      if n == 12:
+        spherical_points = [[0, 0], [np.pi, 0]]
+        spherical_points += [[np.arctan(2), 2 * np.pi * i / 5] for i in range(1, 6)]
+        spherical_points += [
+            [np.pi - np.arctan(2), np.pi / 5 * (2 * i - 11)] for i in range(6, 11)
+        ]
+        theta, phi = zip(*spherical_points)
+        pts = jnp.stack([
+            jnp.asarray(np.cos(phi) * np.sin(theta)),
+            jnp.asarray(np.sin(phi) * np.sin(theta)),
+            jnp.asarray(np.cos(theta)),
+        ], axis=1)
+        return pts
+      else:
+        raise ValueError(
+          f'Unsupported `n_dirs`={n}. Supported explicit values: 1,2,6,12.')
+
+    base_points = _base_unit_points(n_sample)  # (n_sample, 3)
+
+    # rotate base symmetric points to a random axis per-bin
+    keys_bins = jax.random.split(subkey_dirs, self.nbins)
+
+    def _rotate_to_random_axis(key):
+      z = jax.random.normal(key, (3,))
+      ep3 = z / (jnp.linalg.norm(z) + 1e-12)
+      # choose a stable 'up' vector
+      up = jnp.array([0.0, 0.0, 1.0])
+      up = jnp.where(jnp.abs(ep3[2]) < 0.9, up, jnp.array([0.0, 1.0, 0.0]))
+      ep1 = jnp.cross(up, ep3)
+      ep1 = ep1 / (jnp.linalg.norm(ep1) + 1e-12)
+      ep2 = jnp.cross(ep3, ep1)
+      R = jnp.stack([ep1, ep2, ep3], axis=1)  # columns are basis vectors
+      aligned = (R @ base_points.T).T
+      return aligned  # (n_sample, 3)
+
+    dirs = jax.vmap(_rotate_to_random_axis)(keys_bins)  # (nbins, n_sample, 3)
     shift_vec = dirs * self.bin_centers[:, None, None]
     # update stored key
     self.key = key
@@ -190,30 +240,47 @@ class RadialTwoBodyDensity:
       # accumulator for bins
       acc = jnp.zeros((self.nbins,))
 
-      # iterate over random pairs using lax.fori_loop instead of Python loops
-      def pair_body(p, acc_in):
-        i_idx = ia_idx[p]
-        j_idx = ib_idx[p]
+      # Vectorized pair loop using `lax.scan` + batch `vmap` over shifts.
+      # For each pair, build all (nbins * n_sample) shifts, compute the
+      # modified positions in one batch, call the network once per-shift
+      # (and internally batched over walkers), then aggregate back to bins.
+      def pair_step(acc_in, p_idx):
+        i_idx = ia_idx[p_idx]
+        j_idx = ib_idx[p_idx]
 
-        def body_bin(b, acc_bin):
-          def body_dir(k, acc_dir):
-            shift = shift_vec[b, k]
-            # build shifted positions for all walkers
-            shift_b = jnp.broadcast_to(shift, (nwalker_per_device, 3))
-            pos_mod = pos_expand.at[:, i_idx, :].add(shift_b)
-            pos_mod = pos_mod.at[:, j_idx, :].add(shift_b)
-            pos_mod_flat = jnp.reshape(pos_mod, (nwalker_per_device, -1))
-            numer_signs, numer_logs = batch_network(params, pos_mod_flat, spins_device, atoms_device, charges_device)
-            contrib = numer_signs * denom_signs * jnp.exp(numer_logs - denom_logs)
-            s = jnp.sum(contrib)
-            return acc_dir.at[b].add(s)
-          acc_bin = jax.lax.fori_loop(0, n_sample, body_dir, acc_bin)
-          return acc_bin
+        # mask over particle index where the shift should be added
+        nparticles = pos_expand.shape[1]
+        mask = jnp.zeros((nparticles, 3))
+        mask = mask.at[i_idx].add(1.0)
+        mask = mask.at[j_idx].add(1.0)
 
-        acc_out = jax.lax.fori_loop(0, self.nbins, body_bin, acc_in)
-        return acc_out
+        nshifts = self.nbins * n_sample
+        shifts = jnp.reshape(shift_vec, (nshifts, 3))
 
-      acc = jax.lax.fori_loop(0, npairs, pair_body, acc)
+        # base positions: (1, nwalker, nparticles, 3)
+        base = pos_expand[None, ...]
+        # pos_mod: (nshifts, nwalker, nparticles, 3)
+        pos_mod = base + shifts[:, None, None, :] * mask[None, None, :, :]
+        pos_mod_flat = jnp.reshape(pos_mod, (nshifts, nwalker_per_device, -1))
+
+        # compute per-shift contributions using a fori_loop to avoid allocating
+        # large intermediate arrays when vmap would OOM. This is memory-friendly
+        # and preferred for small-ish `n_dirs`.
+        def shift_body(s, acc_s):
+          pos_s = pos_mod_flat[s]  # (nwalker, nparticles*3)
+          numer_s, logs_s = batch_network(params, pos_s, spins_device, atoms_device, charges_device)
+          contrib_s = numer_s * denom_signs * jnp.exp(logs_s - denom_logs)
+          val = jnp.sum(contrib_s)
+          return acc_s.at[s].set(val)
+
+        s_per_shift = jax.lax.fori_loop(0, nshifts, shift_body, jnp.zeros((nshifts,), dtype=denom_logs.dtype))
+        s_per_bin = jnp.reshape(s_per_shift, (self.nbins, n_sample))
+        s_bin_sum = jnp.sum(s_per_bin, axis=1)  # (nbins,)
+
+        acc_out = acc_in + s_bin_sum
+        return acc_out, None
+
+      acc, _ = jax.lax.scan(pair_step, acc, jnp.arange(npairs))
 
       # normalize accumulator: divide by (nwalker_per_device * npairs * shell_vol)
       shell_vol = 4.0 * jnp.pi / 3.0 * (self.bin_edges[1:]**3 - self.bin_edges[:-1]**3)
