@@ -59,7 +59,11 @@ def make_multiwave_envelope(kpoints: jnp.ndarray) -> envelopes.Envelope:
     params = []
     nk = kpoints.shape[0]
     for output_dim in output_dims:
-      params.append({'sigma': jnp.zeros((2 * nk, output_dim))})
+      if nk <= 1:
+        init_sigma = 0.0
+      else:
+        init_sigma = 0.05
+      params.append({'sigma': jnp.ones((2 * nk, output_dim)) * init_sigma})
       params[-1]['sigma'] = params[-1]['sigma'].at[0, :].set(1.0)
     return params
 
