@@ -1235,7 +1235,7 @@ def make_fermi_net_layers(
     del spins  # Unused.
 
     ae_features, ee_features = options.feature_layer.apply(
-        ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, **params['input']
+        ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee,
     )
 
     if options.electron_nuclear_aux_dims:

@@ -116,7 +116,7 @@ def make_pbc_feature_layer(
         
     return (ae_feat_dim, ee_feat_dim), {}
 
-  def apply(ae, r_ae, ee, r_ee, **params) -> Tuple[jnp.ndarray, jnp.ndarray]:
+  def apply(ae, r_ae, ee, r_ee) -> Tuple[jnp.ndarray, jnp.ndarray]:
     # One e features in phase coordinates, (s_ae)_i = k_i . ae
     s_ae = jnp.einsum('il,jkl->jki', reciprocal_vecs, ae)
     # If primitive reciprocal vectors provided, compute s_ae_primitive

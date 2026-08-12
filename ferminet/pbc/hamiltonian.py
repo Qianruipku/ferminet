@@ -34,12 +34,11 @@ import jax.numpy as jnp
 
 def make_ewald_potential_3d(
     lattice: jnp.ndarray,
-    atoms: jnp.ndarray,
     atom_charges: jnp.ndarray,
     particle_charges: jnp.ndarray,
     truncation_limit: int = 5,
     is_heg: bool = False,
-) -> Callable[[jnp.ndarray, jnp.ndarray], float]:
+) -> Callable[[jnp.ndarray, jnp.ndarray, jnp.ndarray], float]:
   """Creates a function to evaluate infinite Coulomb sum for periodic lattice.
 
   Args:
@@ -99,7 +98,7 @@ def make_ewald_potential_3d(
 
   batch_ewald_sum = jax.vmap(ewald_sum, in_axes=(0,))
 
-  def potential(positions: jnp.ndarray, nspins: jnp.ndarray):
+  def potential(positions: jnp.ndarray, atoms: jnp.ndarray, nspins: jnp.ndarray):
     """Callable which returns the Ewald potential
 
     Args:
@@ -190,8 +189,6 @@ def local_energy(
   
   if ndim != 3:
     raise NotImplementedError(f'{ndim}-dimensional Ewald summation not implemented')
-  else:
-    ewald_function = make_ewald_potential_3d
   
   if not pp_symbols:
     effective_charges = charges
@@ -227,6 +224,9 @@ def local_energy(
                                         laplacian_method=laplacian_method,
                                         ndim=ndim)
   is_heg = jnp.all(charges == 0)
+  potential_energy = make_ewald_potential_3d(
+            lattice_vectors, effective_charges, particle_charges, convergence_radius, is_heg
+        )
 
   def _e_l(
       params: networks.ParamTree, key: chex.PRNGKey, data: networks.FermiNetData
@@ -238,16 +238,13 @@ def local_energy(
       key: RNG state.
       data: MCMC configuration.
     """
-    potential_energy = ewald_function(
-        lattice_vectors, data.atoms, effective_charges, particle_charges, convergence_radius, is_heg
-    )
-    potential = potential_energy(data.positions, nspins)
+    potential = potential_energy(data.positions, data.atoms, nspins)
     if use_pp:
       r_ae = jnp.reshape(data.positions, [-1, 1, ndim]) - data.atoms[None, ...]
       batch_min_dis = jax.vmap(min_image_distance_triclinic, in_axes=(0, None, None))
       ae_min, r_ae_min = batch_min_dis(r_ae, lat, r_search)
       r_ae_min = r_ae_min[..., None]
-      potential += + pp_local(r_ae_min) + pp_nonlocal(key, f, params, data, ae_min, r_ae_min)
+      potential += pp_local(r_ae_min) + pp_nonlocal(key, f, params, data, ae_min, r_ae_min)
     kinetic = ke(params, data)
     return potential + kinetic, None
 
