@@ -706,7 +706,8 @@ def cal_apmd(
 
 
 def cal_ann_rate(
-    signed_network: networks.FermiNetLike,
+    contact_prob_fn: networks.FermiNetLike,
+    sample_type: str,
     nspins: Tuple[int, ...],
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
@@ -734,12 +735,15 @@ def cal_ann_rate(
         'Annihilation rate is only implemented for periodic boundary '
         'conditions.')
 
-  init_state = jnp.zeros((jax.local_device_count(),))
   prefactor = 50.48473
   Volume = jnp.linalg.det(lattice_vectors)
   n_particles = sum(nspins)
   n_electrons = n_particles - 1  # exclude the positron
 
+  if sample_type == 'none':
+    init_state = jnp.zeros((jax.local_device_count(), 1))
+  else:
+    init_state = jnp.zeros((jax.local_device_count(), 2))
 
   @functools.partial(constants.pmap)
   def ann_rate_estimator(
@@ -749,34 +753,11 @@ def cal_ann_rate(
   ) -> jnp.ndarray:
     """Returns the annihilation rate contribution from configurations x."""
 
-    pos = data.positions.reshape(-1, n_particles, 3)
-    nwalker_per_device = pos.shape[0]
+    result = contact_prob_fn(params, data.positions, data.spins, data.atoms, data.charges)
+    state = constants.pmean(result)
+    state = state.at[0].set(state[0] * prefactor * n_electrons / Volume)
 
-    batch_network = jax.vmap(
-        signed_network, in_axes=(None, 0, 0, 0, 0), out_axes=(0, 0))
-    _, log_psi = batch_network(
-        params, data.positions, data.spins, data.atoms, data.charges)
-
-    def loop_electron(j, val):
-      pos_modified_j = pos.copy()
-      electron_j_coords = pos[:, j, :]
-      pos_modified_j = pos_modified_j.at[:, -1, :].set(electron_j_coords)
-
-      pos_modified_flat = jnp.reshape(
-        pos_modified_j, (nwalker_per_device, n_particles * 3))
-      _, log_psi_modified_j = batch_network(
-        params, pos_modified_flat, data.spins, data.atoms, data.charges)
-
-      # |psi_modified|^2 / |psi|^2 = exp(2 * (log|psi_modified| - log|psi|)).
-      ratio = jnp.exp(2.0 * (log_psi_modified_j - log_psi))
-      return val + jnp.sum(ratio)
-
-    contribution = jax.lax.fori_loop(
-      0, n_electrons, loop_electron, jnp.array(0.0, dtype=log_psi.dtype))
-
-    state = constants.pmean(contribution) / (n_electrons * nwalker_per_device)
-    
-    return state * prefactor * n_electrons / Volume
+    return state
 
   return init_state, ann_rate_estimator
 

@@ -46,6 +46,7 @@ import ferminet.pbc.hamiltonian as pbc_hamiltonian
 import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
 from ferminet.observable.apmd import write_apmd_1d
+from ferminet.observable.mix_net import make_mix_batch_network_fn
 from ferminet.observable.densitymatrix import RadialTwoBodyDensity
 import jax
 from jax.experimental import multihost_utils
@@ -527,7 +528,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   batch_network = jax.vmap(
       logabs_network, in_axes=(None, 0, 0, 0, 0), out_axes=0
   )  # batched network
-
+  sample_network = batch_network
+  if cfg.optim.optimizer == 'none' and cfg.observables.ann_rate.calculate:
+    sample_network, contact_prob_fn = make_mix_batch_network_fn(logabs_network, cfg)
   # Exclusively when computing the gradient wrt the energy for complex
   # wavefunctions, it is necessary to have log(psi) rather than log(|psi|).
   # This is unused if the wavefunction is real-valued.
@@ -691,7 +694,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   if cfg.observables.ann_rate.calculate:
     (observable_states['ann_rate'],
      observable_fns['ann_rate']) = observables.cal_ann_rate(
-         signed_network,
+         contact_prob_fn,
+         cfg.mcmc.mix_sample.type,
          cfg.system.particles,
          cfg.system.pbc.apply_pbc,
          cfg.system.pbc.lattice_vectors,
@@ -747,7 +751,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # Construct MCMC step
   atoms_to_mcmc = atoms if cfg.mcmc.scale_by_nuclear_distance else None
   mcmc_step = mcmc.make_mcmc_step(
-      batch_network,
+      sample_network,
       device_batch_size,
       nspins=cfg.system.particles,
       ndim=cfg.system.ndim,
@@ -984,7 +988,14 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     else:
       pmoves = np.zeros((len(cfg.system.particles), cfg.mcmc.adapt_frequency))
 
-  if t_init == 0:
+  #max_width is half of the lattice
+  lattice = cfg.system.pbc.lattice_vectors
+  if lattice is not None:
+    max_width = jnp.min(jnp.linalg.norm(lattice, axis=0)) / 2.0
+  else:
+    max_width = 20.0
+
+  if t_init == 0 or cfg.optim.optimizer == 'none':
     logging.info('Burning in MCMC chain for %d steps', cfg.mcmc.burn_in)
 
     burn_in_step = make_training_step(
@@ -992,12 +1003,16 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
     for t in range(cfg.mcmc.burn_in):
       sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
-      data, params, *_ = burn_in_step(
+      data, params, _, _, _, pmove  = burn_in_step(
           data,
           params,
           state=None,
           key=subkeys,
           mcmc_width=mcmc_width)
+      pmove = pmove[0]
+      mcmc_width, pmoves = mcmc.update_mcmc_width(
+            t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves,
+            cfg.mcmc.min_width, max_width, cfg.system.pbc.apply_pbc)
     logging.info('Completed burn-in MCMC steps')
     sharded_key, subkeys = kfac_jax.utils.p_split(sharded_key)
     ptotal_energy = constants.pmap(evaluate_loss)
@@ -1053,13 +1068,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   with writer_manager as writer:
     # Main training loop
     num_resets = 0  # used if reset_if_nan is true
-
-    #max_width is half of the lattice
-    lattice = cfg.system.pbc.lattice_vectors
-    if lattice is not None:
-      max_width = jnp.min(jnp.linalg.norm(lattice, axis=0)) / 2.0
-    else:
-      max_width = 20.0
     
     training_start_time = old_time = time.time()
     timestamps_queue = deque(maxlen=101)
@@ -1152,8 +1160,11 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
                           ckpt_save_path=ckpt_save_path)
 
       if cfg.observables.ann_rate.calculate and jax.process_index() == 0:
-        ann_rate_value = float(np.asarray(observable_data['ann_rate'][0]))
-        ann_rate_file.write(f'{t:05d}  {ann_rate_value:.10e}\n')
+        arr = np.asarray(observable_data['ann_rate'][0]).ravel()
+        if arr.size >= 2:
+          ann_rate_file.write(f'{t:05d}  {arr[0]:.10e} {arr[1]:.10e}\n')
+        else:
+          ann_rate_file.write(f'{t:05d}  {float(arr.ravel()[0]):.10e}\n')
         ann_rate_file.flush()
 
       # Update MCMC move width

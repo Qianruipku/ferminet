@@ -278,6 +278,13 @@ def default() -> ml_collections.ConfigDict:
           'sample_all': False,  # If true, sample all particles in each step. If False, sample only one particle at a time.
           'save_positions': False,  # Save the electron positions in pos.npy
           'pos_list': None,  # Optional list of particle indices to store; None stores all particles.
+          'mix_sample': {
+            'type': 'none',  # One of 'none', 'contact', 'contact_all', 'constant'
+            'alpha': 0.9,    # Parameter for contact sampling.
+            'log_alpha': -1, # Parameter for constant sampling
+            'contact_index': 0,
+          }
+          
       },
       'network': {
           'network_type': 'ferminet',  # One of 'ferminet' or 'psiformer'.
