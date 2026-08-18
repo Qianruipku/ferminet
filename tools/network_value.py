@@ -10,7 +10,7 @@ import ml_collections
 from ferminet import networks
 from ferminet import envelopes
 from ferminet import psiformer
-from ferminet.utils import system
+from ferminet.utils import system, Lattice
 import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
 
@@ -97,7 +97,7 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             cfg.system.pbc.min_kpoints
         )
         envelope = pbc_envelopes.make_multiwave_envelope(kpoints)
-    
+    lat = Lattice(cfg.system.pbc.lattice_vectors) if cfg.system.pbc.apply_pbc else None
     # Create network
     if cfg.network.network_type == 'ferminet':
         network = networks.make_fermi_net(
@@ -108,6 +108,8 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             particle_charges=cfg.system.charges,
             determinants=cfg.network.determinants,
             states=cfg.system.states,
+            apply_pbc=cfg.system.pbc.apply_pbc,
+            lat=lat,
             envelope=envelope,
             feature_layer=feature_layer,
             jastrow=cfg.network.get('jastrow', 'default'),
@@ -126,6 +128,8 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             particle_charges=cfg.system.charges,
             determinants=cfg.network.determinants,
             states=cfg.system.states,
+            apply_pbc=cfg.system.pbc.apply_pbc,
+            lat=lat,
             envelope=envelope,
             feature_layer=feature_layer,
             jastrow=cfg.network.get('jastrow', 'default'),

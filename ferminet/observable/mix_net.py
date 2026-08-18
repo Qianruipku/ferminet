@@ -73,6 +73,37 @@ def make_mix_batch_network_fn(network_fn, cfg):
             mean_prob_ratio = jnp.mean(ratio_prob)
 
             return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
+
+    elif sample_type == 'contact_i':
+        lattice_vectors = cfg.system.pbc.lattice_vectors
+        inv_volume = 1.0 / np.linalg.det(lattice_vectors) if cfg.system.pbc.apply_pbc else 1.0
+
+        def sample_function(params, positions, spins, atoms, charges):
+            log_prob = batch_network(params, positions, spins, atoms, charges)
+            pos = positions.reshape((positions.shape[0], -1, ndim))
+            pos_index = pos[:, index ,:]
+            new_pos = pos.at[:, -1, :].set(pos_index)
+            pos_contact = new_pos.reshape(positions.shape)
+            log_contact = batch_network(params, pos_contact, spins, atoms, charges)
+            mix_prob = (1-alpha) * jnp.exp(2*log_prob) + alpha * jnp.exp(2*log_contact) * inv_volume
+            return 0.5 * jnp.log(mix_prob)
+
+        def contact_prob_fn(params, positions, spins, atoms, charges):
+            log_prob = batch_network(params, positions, spins, atoms, charges)
+            prob_index = batch_contact_network(params, index, positions, spins, atoms, charges)
+            
+
+            mix_log_prob = 2 * prob_index + jnp.log((1-alpha) * jnp.exp(2 * (log_prob - prob_index)) + alpha * inv_volume)
+
+            ratio_contact_log = 2.0 * prob_index - mix_log_prob
+            ratio_contact_prob = jnp.exp(ratio_contact_log)
+            mean_contact_ratio = jnp.mean(ratio_contact_prob)
+
+            ratio_prob_log = 2.0 * log_prob - mix_log_prob
+            ratio_prob = jnp.exp(ratio_prob_log)
+            mean_prob_ratio = jnp.mean(ratio_prob)
+
+            return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
         
     elif sample_type == 'contact_all':
         lattice_vectors = cfg.system.pbc.lattice_vectors
