@@ -8,15 +8,21 @@ def make_mix_batch_network_fn(network_fn, cfg):
     alpha = cfg.mcmc.mix_sample.alpha
     index=cfg.mcmc.mix_sample.contact_index
     ndim = cfg.system.ndim
+    posi_on_elec = cfg.mcmc.mix_sample.posi_on_elec
     n_particles = sum(cfg.system.particles)
     n_electrons = n_particles - 1
     batch_network = jax.vmap(
             network_fn, in_axes=(None, 0, 0, 0, 0), out_axes=0
     )
+
     def batch_contact_network(params, j, positions, spins, atoms, charges):
         pos = positions.reshape((positions.shape[0], -1, ndim))
-        posj = pos[:, j ,:]
-        new_pos = pos.at[:, -1, :].set(posj)
+        if posi_on_elec:
+            posj = pos[:, j ,:]
+            new_pos = pos.at[:, -1, :].set(posj)
+        else:
+            poslast = pos[:, -1, :]
+            new_pos = pos.at[:, j, :].set(poslast)
         pos_contact = new_pos.reshape(positions.shape)
         log_contact = batch_network(params, pos_contact, spins, atoms, charges)
         return log_contact

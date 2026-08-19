@@ -283,6 +283,7 @@ def default() -> ml_collections.ConfigDict:
             'alpha': 0.9,    # Parameter for contact sampling.
             'log_alpha': -1, # Parameter for constant sampling
             'contact_index': 0,
+            'posi_on_elec': True,
           }
           
       },
