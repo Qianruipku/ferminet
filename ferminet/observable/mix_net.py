@@ -17,14 +17,31 @@ def make_mix_batch_network_fn(network_fn, cfg):
 
     def batch_contact_network(params, j, positions, spins, atoms, charges):
         pos = positions.reshape((positions.shape[0], -1, ndim))
-        if posi_on_elec:
+        if posi_on_elec == 1:
             posj = pos[:, j ,:]
             new_pos = pos.at[:, -1, :].set(posj)
-        else:
+            pos_contact = new_pos.reshape(positions.shape)
+            log_contact = batch_network(params, pos_contact, spins, atoms, charges)
+        elif posi_on_elec == 0:
             poslast = pos[:, -1, :]
             new_pos = pos.at[:, j, :].set(poslast)
-        pos_contact = new_pos.reshape(positions.shape)
-        log_contact = batch_network(params, pos_contact, spins, atoms, charges)
+            pos_contact = new_pos.reshape(positions.shape)
+            log_contact = batch_network(params, pos_contact, spins, atoms, charges)
+        else:
+            posj = pos[:, j ,:]
+            poslast = pos[:, -1, :]
+            new_pos1 = pos
+            new_pos2 = pos
+            new_pos1 = new_pos1.at[:, -1, :].set(posj)
+            new_pos2 = new_pos2.at[:, j, :].set(poslast)
+            pos_contact1 = new_pos1.reshape(positions.shape)
+            pos_contact2 = new_pos2.reshape(positions.shape)
+            log_contact1 = batch_network(params, pos_contact1, spins, atoms, charges)
+            log_contact2 = batch_network(params, pos_contact2, spins, atoms, charges)
+            max_log = jnp.maximum(log_contact1, log_contact2)
+            log_contact1 = log_contact1 - max_log
+            log_contact2 = log_contact2 - max_log
+            log_contact = 0.5 * jnp.log(0.5 * jnp.exp(2*(log_contact1)) + 0.5 * jnp.exp(2*(log_contact2))) + max_log
         return log_contact
     
     def scan_contact_network(params, positions, spins, atoms, charges):
@@ -49,8 +66,6 @@ def make_mix_batch_network_fn(network_fn, cfg):
             return jnp.array([mean_contact_ratio])
             
     elif sample_type == 'contact':
-        lattice_vectors = cfg.system.pbc.lattice_vectors
-        inv_volume = 1.0 / np.linalg.det(lattice_vectors) if cfg.system.pbc.apply_pbc else 1.0
 
         def sample_function(params, positions, spins, atoms, charges):
             log_prob = batch_network(params, positions, spins, atoms, charges)
@@ -59,8 +74,8 @@ def make_mix_batch_network_fn(network_fn, cfg):
             new_pos = pos.at[:, -1, :].set(pos_index)
             pos_contact = new_pos.reshape(positions.shape)
             log_contact = batch_network(params, pos_contact, spins, atoms, charges)
-            mix_prob = (1-alpha) * jnp.exp(2*log_prob) + alpha * jnp.exp(2*log_contact) * inv_volume
-            return 0.5 * jnp.log(mix_prob)
+            mix_log_prob = log_contact + 0.5 * jnp.log((1-alpha) * jnp.exp(2 * (log_prob- log_contact)) + alpha)
+            return mix_log_prob
 
         def contact_prob_fn(params, positions, spins, atoms, charges):
             log_prob = batch_network(params, positions, spins, atoms, charges)
@@ -68,7 +83,7 @@ def make_mix_batch_network_fn(network_fn, cfg):
             
 
             prob_index = all_contact_log[index]
-            mix_log_prob = 2 * prob_index + jnp.log((1-alpha) * jnp.exp(2 * (log_prob - prob_index)) + alpha * inv_volume)
+            mix_log_prob = 2 * prob_index + jnp.log((1-alpha) * jnp.exp(2 * (log_prob - prob_index)) + alpha)
 
             ratio_contact_log = 2.0 * all_contact_log - mix_log_prob[None, :]
             ratio_contact_prob = jnp.exp(ratio_contact_log)
@@ -81,8 +96,6 @@ def make_mix_batch_network_fn(network_fn, cfg):
             return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
 
     elif sample_type == 'contact_i':
-        lattice_vectors = cfg.system.pbc.lattice_vectors
-        inv_volume = 1.0 / np.linalg.det(lattice_vectors) if cfg.system.pbc.apply_pbc else 1.0
 
         def sample_function(params, positions, spins, atoms, charges):
             log_prob = batch_network(params, positions, spins, atoms, charges)
@@ -91,15 +104,15 @@ def make_mix_batch_network_fn(network_fn, cfg):
             new_pos = pos.at[:, -1, :].set(pos_index)
             pos_contact = new_pos.reshape(positions.shape)
             log_contact = batch_network(params, pos_contact, spins, atoms, charges)
-            mix_prob = (1-alpha) * jnp.exp(2*log_prob) + alpha * jnp.exp(2*log_contact) * inv_volume
-            return 0.5 * jnp.log(mix_prob)
+            mix_log_prob = log_contact + 0.5 * jnp.log((1-alpha) * jnp.exp(2*(log_prob-log_contact)) + alpha)
+            return mix_log_prob
 
         def contact_prob_fn(params, positions, spins, atoms, charges):
             log_prob = batch_network(params, positions, spins, atoms, charges)
             prob_index = batch_contact_network(params, index, positions, spins, atoms, charges)
             
 
-            mix_log_prob = 2 * prob_index + jnp.log((1-alpha) * jnp.exp(2 * (log_prob - prob_index)) + alpha * inv_volume)
+            mix_log_prob = 2 * prob_index + jnp.log((1-alpha) * jnp.exp(2 * (log_prob - prob_index)) + alpha)
 
             ratio_contact_log = 2.0 * prob_index - mix_log_prob
             ratio_contact_prob = jnp.exp(ratio_contact_log)
@@ -112,14 +125,12 @@ def make_mix_batch_network_fn(network_fn, cfg):
             return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
         
     elif sample_type == 'contact_all':
-        lattice_vectors = cfg.system.pbc.lattice_vectors
-        inv_volume = 1.0 / np.linalg.det(lattice_vectors) if cfg.system.pbc.apply_pbc else 1.0
 
         def sample_function(params, positions, spins, atoms, charges):
             log_prob = batch_network(params, positions, spins, atoms, charges)
             all_contact_prob = scan_contact_network(params, positions, spins, atoms, charges)
             mean_contact_prob = jnp.mean(all_contact_prob, axis=0)
-            mix_prob = (1-alpha) * jnp.exp(2*log_prob) + alpha * jnp.exp(2*mean_contact_prob) * inv_volume
+            mix_prob = mean_contact_prob + 0.5 * jnp.log((1-alpha) * jnp.exp(2*(log_prob - mean_contact_prob)) + alpha)
             return 0.5 * jnp.log(mix_prob)
 
         def contact_prob_fn(params, positions, spins, atoms, charges):
@@ -128,7 +139,7 @@ def make_mix_batch_network_fn(network_fn, cfg):
             all_contact_prob = jnp.exp(2 * (all_contact_log - log_prob[None, :]))
             mean_contact_prob = jnp.mean(all_contact_prob, axis=0)
 
-            mix_log_prob = 2 * log_prob + jnp.log((1-alpha) + alpha * inv_volume * mean_contact_prob)
+            mix_log_prob = 2 * log_prob + jnp.log((1-alpha) + alpha * mean_contact_prob)
 
             ratio_contact_log = 2.0 * all_contact_log - mix_log_prob[None, :]
             ratio_contact_prob = jnp.exp(ratio_contact_log)
@@ -138,27 +149,6 @@ def make_mix_batch_network_fn(network_fn, cfg):
             ratio_prob = jnp.exp(ratio_prob_log)
             mean_prob_ratio = jnp.mean(ratio_prob)
 
-            return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
-    elif sample_type == 'constant':
-        log_a = cfg.mcmc.mix_sample.log_alpha
-        def sample_function(params, positions, spins, atoms, charges):
-            log_prob = batch_network(params, positions, spins, atoms, charges)
-            mix_prob = (1-jnp.exp(log_a)) * jnp.exp(2*log_prob-log_a) + 1
-            return 0.5 * jnp.log(mix_prob) + 0.5 * log_a
-
-        def contact_prob_fn(params, positions, spins, atoms, charges):
-            log_prob = batch_network(params, positions, spins, atoms, charges)
-            mix_log_prob = jnp.log((1-jnp.exp(log_a)) * jnp.exp(2 * log_prob - log_a) + 1) + log_a
-
-            all_contact_log = scan_contact_network(params, positions, spins, atoms, charges)
-
-            ratio_contact_log = 2.0 * all_contact_log - mix_log_prob[None, :]
-            ratio_contact_prob = jnp.exp(ratio_contact_log)
-            mean_contact_ratio = jnp.mean(ratio_contact_prob)
-
-            ratio_prob_log = 2.0 * log_prob - mix_log_prob
-            ratio_prob = jnp.exp(ratio_prob_log)
-            mean_prob_ratio = jnp.mean(ratio_prob)
             return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
     else:
         raise ValueError(f"Invalid mix_sample type: {sample_type}")

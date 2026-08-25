@@ -1168,10 +1168,11 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         ann_rate_file.flush()
 
       # Update MCMC move width
-      mcmc_width, pmoves = mcmc.update_mcmc_width(
-        t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves,
-        cfg.mcmc.min_width, max_width, cfg.system.pbc.apply_pbc)
-
+      if cfg.mcmc.adapt_width:
+        mcmc_width, pmoves = mcmc.update_mcmc_width(
+          t, mcmc_width, cfg.mcmc.adapt_frequency, pmove, pmoves,
+          cfg.mcmc.min_width, max_width, cfg.system.pbc.apply_pbc)
+  
       if cfg.debug.check_nan:
         tree = {'params': params}
         if cfg.optim.optimizer != 'none':

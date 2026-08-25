@@ -259,6 +259,7 @@ def default() -> ml_collections.ConfigDict:
           'mix_width': 1.0,
           # Probability of taking a large jump in the mixture proposal.
           'mix_prob': 0.0,
+          'adapt_width': True,  # If true, adapt the MCMC step size to achieve target acceptance rate
           # Number of steps after which to update the adaptive MCMC step size
           'adapt_frequency': 100,
           'use_hmc': False,  # Use HMC (True) or Random Walk Metropolis (False)
@@ -279,11 +280,11 @@ def default() -> ml_collections.ConfigDict:
           'save_positions': False,  # Save the electron positions in pos.npy
           'pos_list': None,  # Optional list of particle indices to store; None stores all particles.
           'mix_sample': {
-            'type': 'none',  # One of 'none', 'contact', 'contact_all', 'constant'
+            'type': 'none',  # One of 'none', 'contact', 'contact_all', 'contact_i'
             'alpha': 0.9,    # Parameter for contact sampling.
             'log_alpha': -1, # Parameter for constant sampling
             'contact_index': 0,
-            'posi_on_elec': True,
+            'posi_on_elec': 1,
           }
           
       },
