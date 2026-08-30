@@ -64,6 +64,13 @@ def make_mix_batch_network_fn(network_fn, cfg):
             ratio = jnp.exp(2 * ratio_log)
             mean_contact_ratio = jnp.mean(ratio)
             return jnp.array([mean_contact_ratio])
+        def distribution_fn(params, positions, spins, atoms, charges):
+            log_prob = batch_network(params, positions, spins, atoms, charges)
+            all_contact_log = scan_contact_network(params, positions, spins, atoms, charges)
+            ratio_log = 2.0 * (all_contact_log - log_prob[None, :])
+            ratio_log = ratio_log.reshape(-1)
+            ratio_prob_log = jnp.ones_like(ratio_log)
+            return ratio_log, ratio_prob_log
             
     elif sample_type == 'contact':
 
@@ -95,6 +102,17 @@ def make_mix_batch_network_fn(network_fn, cfg):
 
             return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
 
+        def distribution_fn(params, positions, spins, atoms, charges):
+            log_prob = batch_network(params, positions, spins, atoms, charges)
+            all_contact_log = scan_contact_network(params, positions, spins, atoms, charges)
+            prob_index = all_contact_log[index]
+            mix_log_prob = 2 * prob_index + jnp.log((1-alpha) * jnp.exp(2 * (log_prob - prob_index)) + alpha)
+            ratio_contact_log = 2.0 * all_contact_log - mix_log_prob[None, :]
+            ratio_contact_log = ratio_contact_log.reshape(-1)
+            ratio_prob_log = 2.0 * log_prob - mix_log_prob
+            ratio_prob_log = ratio_prob_log.reshape(-1)
+            return ratio_contact_log, ratio_prob_log
+
     elif sample_type == 'contact_i':
 
         def sample_function(params, positions, spins, atoms, charges):
@@ -123,6 +141,16 @@ def make_mix_batch_network_fn(network_fn, cfg):
             mean_prob_ratio = jnp.mean(ratio_prob)
 
             return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
+
+        def distribution_fn(params, positions, spins, atoms, charges):
+            log_prob = batch_network(params, positions, spins, atoms, charges)
+            prob_index = batch_contact_network(params, index, positions, spins, atoms, charges)
+            mix_log_prob = 2 * prob_index + jnp.log((1-alpha) * jnp.exp(2 * (log_prob - prob_index)) + alpha)
+            ratio_contact_log = 2.0 * prob_index - mix_log_prob
+            ratio_contact_log = ratio_contact_log.reshape(-1)
+            ratio_prob_log = 2.0 * log_prob - mix_log_prob
+            ratio_prob_log = ratio_prob_log.reshape(-1)
+            return ratio_contact_log, ratio_prob_log
         
     elif sample_type == 'contact_all':
 
@@ -150,7 +178,20 @@ def make_mix_batch_network_fn(network_fn, cfg):
             mean_prob_ratio = jnp.mean(ratio_prob)
 
             return jnp.vstack([mean_contact_ratio, mean_prob_ratio])
+        def distribution_fn(params, positions, spins, atoms, charges):
+            log_prob = batch_network(params, positions, spins, atoms, charges)
+            all_contact_log = scan_contact_network(params, positions, spins, atoms, charges)
+            all_contact_prob = jnp.exp(2 * (all_contact_log - log_prob[None, :]))
+            mean_contact_prob = jnp.mean(all_contact_prob, axis=0)
+
+            mix_log_prob = 2 * log_prob + jnp.log((1-alpha) + alpha * mean_contact_prob)
+
+            ratio_contact_log = 2.0 * all_contact_log - mix_log_prob[None, :]
+            ratio_contact_log = ratio_contact_log.reshape(-1)
+            ratio_prob_log = 2.0 * log_prob - mix_log_prob
+            ratio_prob_log = ratio_prob_log.reshape(-1)
+            return ratio_contact_log, ratio_prob_log
     else:
         raise ValueError(f"Invalid mix_sample type: {sample_type}")
 
-    return sample_function, contact_prob_fn
+    return sample_function, contact_prob_fn, distribution_fn

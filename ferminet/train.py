@@ -529,8 +529,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       logabs_network, in_axes=(None, 0, 0, 0, 0), out_axes=0
   )  # batched network
   sample_network = batch_network
-  if cfg.optim.optimizer == 'none' and cfg.observables.ann_rate.calculate:
-    sample_network, contact_prob_fn = make_mix_batch_network_fn(logabs_network, cfg)
+  if cfg.optim.optimizer == 'none' and (cfg.observables.ann_rate.calculate or cfg.observables.ann_rate.distribution):
+    sample_network, contact_prob_fn, distribution_fn = make_mix_batch_network_fn(logabs_network, cfg)
   # Exclusively when computing the gradient wrt the energy for complex
   # wavefunctions, it is necessary to have log(psi) rather than log(|psi|).
   # This is unused if the wavefunction is real-valued.
@@ -677,6 +677,13 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         cfg.system.pbc.apply_pbc,
         cfg.observables.pcf.r_search,
         cfg.system.pbc.lattice_vectors
+    )
+  if cfg.observables.ann_rate.distribution:
+    ann_grids, (observable_states['ann_rate_distribution'],
+      observable_fns['ann_rate_distribution']) = observables.cal_ann_rate_distribute(
+        distribution_fn,
+        cfg.observables.ann_rate.nbins,
+        cfg.observables.ann_rate.range,
     )
   
   if cfg.observables.apmd.calculate:
@@ -1130,6 +1137,24 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             pcf_file = open(os.path.join(ckpt_save_path, name), 'w')
             np.savetxt(pcf_file, pcf_data.T, fmt='%.6f')
             pcf_file.close()
+      if cfg.observables.ann_rate.distribution:
+        observable_states['ann_rate_distribution'] = observable_data['ann_rate_distribution']
+        freq = cfg.observables.ann_rate.save_freq
+        if jax.process_index() == 0:
+          arr = np.asarray(observable_data['ann_rate_distribution'][0])
+          hist = arr / (t + 1)
+          ann_rate_distribution_data = np.vstack((np.asarray(ann_grids), hist[0], hist[1]))
+
+          if (t+1) % freq == 0:
+            name = 'ann_rate_distribution_' + str((t+1)//freq) + '.txt'
+            ann_rate_distribution_file = open(os.path.join(ckpt_save_path, name), 'w')
+            np.savetxt(ann_rate_distribution_file, ann_rate_distribution_data.T, fmt='%.6f')
+            ann_rate_distribution_file.close()
+          if (t+1) == cfg.optim.iterations:
+            name = 'ann_rate_distribution_final.txt'
+            ann_rate_distribution_file = open(os.path.join(ckpt_save_path, name), 'w')
+            np.savetxt(ann_rate_distribution_file, ann_rate_distribution_data.T, fmt='%.6f')
+            ann_rate_distribution_file.close()
 
       if cfg.observables.two_body_dm.calculate:
         two_body_dm.save(ckpt_save_path, t, cfg.optim.iterations)

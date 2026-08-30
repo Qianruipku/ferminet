@@ -762,5 +762,38 @@ def cal_ann_rate(
   return init_state, ann_rate_estimator
 
 
+def cal_ann_rate_distribute(
+    distribution_fn: Callable,
+    nbins: int,
+    range: Tuple[float, float],
+) -> Tuple[jnp.ndarray, Observable]:
+
+  grids = jnp.linspace(range[0], range[1], nbins + 1)
+  bin_width = grids[1] - grids[0]
+  init_state = jnp.zeros((jax.local_device_count(),  2, nbins))
+  @functools.partial(constants.pmap)
+  def ann_rate_distribute_estimator(
+      params: networks.ParamTree,
+      data: networks.FermiNetData,
+      state: jnp.ndarray,
+  ) -> jnp.ndarray:
+    """Returns the annihilation rate contribution from configurations x."""
+
+    result1, result2 = distribution_fn(params, data.positions, data.spins, data.atoms, data.charges)
+    hist1, _ = jnp.histogram(result1, bins=nbins, range=range)
+    hist2, _ = jnp.histogram(result2, bins=nbins, range=range)
+    hist1 = hist1 / jnp.sum(hist1) / bin_width
+    hist2 = hist2 / jnp.sum(hist2) / bin_width
+    total_hist = jnp.vstack([hist1, hist2])
+    total_hist = constants.pmean(total_hist)
+    state = state + total_hist
+    
+
+    return state
+
+  return grids[:-1] + bin_width / 2, (init_state, ann_rate_distribute_estimator)
+
+
+
 # Backwards-compatible alias: preserve old name
 make_density_matrix = make_one_body_density_matrix_in_mo_basis

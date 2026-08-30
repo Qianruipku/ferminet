@@ -428,6 +428,10 @@ def default() -> ml_collections.ConfigDict:
           },
           'ann_rate': {  # annihilation rate (single scalar per step)
             'calculate': False,
+            'distribution': False,  # whether to compute the distribution of annihilation rates
+            'save_freq': 10000,
+            'range': (0.0, 10.0),  
+            'nbins': 100,  
           }
       },
       'debug': {
