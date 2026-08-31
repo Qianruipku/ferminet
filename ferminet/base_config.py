@@ -281,10 +281,9 @@ def default() -> ml_collections.ConfigDict:
           'pos_list': None,  # Optional list of particle indices to store; None stores all particles.
           'mix_sample': {
             'type': 'none',  # One of 'none', 'contact', 'contact_all', 'contact_i'
-            'alpha': 0.9,    # Parameter for contact sampling.
-            'log_alpha': -1, # Parameter for constant sampling
+            'alpha': 0.9,
             'contact_index': 0,
-            'posi_on_elec': 1,
+            'posi_on_elec': 2,
           }
           
       },
