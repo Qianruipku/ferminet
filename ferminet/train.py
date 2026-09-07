@@ -47,6 +47,7 @@ import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
 from ferminet.observable.apmd import write_apmd_1d
 from ferminet.observable.mix_net import make_mix_batch_network_fn
+from ferminet.enhance_sample import make_enhance_sample_fn
 from ferminet.observable.densitymatrix import RadialTwoBodyDensity
 import jax
 from jax.experimental import multihost_utils
@@ -529,8 +530,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       logabs_network, in_axes=(None, 0, 0, 0, 0), out_axes=0
   )  # batched network
   sample_network = batch_network
+  inverse_enhance_sample = None
   if cfg.optim.optimizer == 'none' and (cfg.observables.ann_rate.calculate or cfg.observables.ann_rate.distribution):
     sample_network, contact_prob_fn, distribution_fn = make_mix_batch_network_fn(logabs_network, cfg)
+  elif cfg.optim.optimizer is not 'none' and cfg.mcmc.enhance.factor > 0.0:
+    sample_network, inverse_enhance_sample = make_enhance_sample_fn(logabs_network, lat, cfg)
+
   # Exclusively when computing the gradient wrt the energy for complex
   # wavefunctions, it is necessary to have log(psi) rather than log(|psi|).
   # This is unused if the wavefunction is real-valued.
@@ -764,10 +769,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       ndim=cfg.system.ndim,
       steps=cfg.mcmc.steps,
       atoms=atoms_to_mcmc,
+      lat=lat,
       sample_all= cfg.mcmc.sample_all,
       blocks=cfg.mcmc.blocks * num_states,
       mix_width=cfg.mcmc.mix_width,
       mix_prob=cfg.mcmc.mix_prob,
+      enhance_alpha=cfg.mcmc.enhance.alpha,
   )
   # Construct loss and optimizer
   laplacian_method = cfg.optim.get('laplacian', 'default')
@@ -866,6 +873,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         center_at_clipped_energy=cfg.optim.center_at_clip,
         complex_output=use_complex,
         max_vmap_batch_size=cfg.optim.get('max_vmap_batch_size', 0),
+        inverse_enhance_sample=inverse_enhance_sample,
     )
   elif cfg.optim.objective == 'wqmc':
     evaluate_loss = qmc_loss_functions.make_wqmc_loss(

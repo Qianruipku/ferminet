@@ -15,7 +15,7 @@
 """Helper functions to create the loss and custom gradient of the loss."""
 
 import functools
-from typing import Tuple
+from typing import Tuple, Optional, Callable
 
 import chex
 from ferminet import constants
@@ -50,6 +50,8 @@ class AuxiliaryLossData:
   local_energy_mat: jax.Array | None = None
   s_ij: jax.Array | None = None
   mean_s_ij: jax.Array | None = None
+  local_enhance_factor: jax.Array | None = None
+  mean_enhance_factor: jax.Array | None = None
 
 
 class LossFn(Protocol):
@@ -156,7 +158,8 @@ def make_loss(network: networks.LogFermiNetLike,
               clip_from_median: bool = True,
               center_at_clipped_energy: bool = True,
               complex_output: bool = False,
-              max_vmap_batch_size: int = 0) -> LossFn:
+              max_vmap_batch_size: int = 0,
+              inverse_enhance_sample: Optional[Callable] = None) -> LossFn:
   """Creates the loss function, including custom gradients.
 
   Args:
@@ -222,15 +225,29 @@ def make_loss(network: networks.LogFermiNetLike,
     """
     keys = jax.random.split(key, num=data.positions.shape[0])
     e_l, e_l_mat = batch_local_energy(params, keys, data)
-    loss = constants.pmean(jnp.mean(e_l))
-    loss_diff = e_l - loss
-    variance = constants.pmean(jnp.mean(loss_diff * jnp.conj(loss_diff)))
+    enhance_mat = None
+    mean_enhance = None
+    # If inverse_enhance_sample provided we compute weighted expectation
+    if inverse_enhance_sample is not None:
+      enhance_mat = inverse_enhance_sample(data.positions)
+      mean_enhance = constants.pmean(jnp.mean(enhance_mat))
+      mean_e_inv = constants.pmean(jnp.mean(enhance_mat * e_l))
+      loss = mean_e_inv / mean_enhance
+      # variance of weighted estimator
+      loss_diff = e_l - loss
+      variance = constants.pmean(jnp.mean(enhance_mat * (loss_diff * jnp.conj(loss_diff)))) / mean_enhance
+    else:
+      loss = constants.pmean(jnp.mean(e_l))
+      loss_diff = e_l - loss
+      variance = constants.pmean(jnp.mean(loss_diff * jnp.conj(loss_diff)))
     return loss, AuxiliaryLossData(
         energy=loss,
         variance=variance.real,
         local_energy=e_l,
         clipped_energy=e_l,
         local_energy_mat=e_l_mat,
+        local_enhance_factor=enhance_mat,
+        mean_enhance_factor=mean_enhance
     )
 
   @total_energy.defjvp
@@ -240,16 +257,28 @@ def make_loss(network: networks.LogFermiNetLike,
     loss, aux_data = total_energy(params, key, data)
 
     if clip_local_energy > 0.0:
-      aux_data.clipped_energy, diff = clip_local_values(
+      clipped_center, diff = clip_local_values(
           aux_data.local_energy,
           loss,
           clip_local_energy,
           clip_from_median,
           center_at_clipped_energy,
           complex_output)
-    else:
-      diff = aux_data.local_energy - loss
 
+    # For gradients with importance weights, build diff = (inv*(e - loss))/mean_inv
+    if inverse_enhance_sample is not None:
+      enhance_mat = aux_data.local_enhance_factor
+      mean_enhance = aux_data.mean_enhance_factor
+      if clip_local_energy > 0.0:
+        aux_data.clipped_energy = clipped_center * enhance_mat / mean_enhance
+        diff = diff * enhance_mat / mean_enhance
+      else:
+        diff = (enhance_mat * (aux_data.local_energy - loss)) / mean_enhance
+    else:
+      if clip_local_energy > 0.0:
+        aux_data.clipped_energy = aux_data.clipped_energy
+      else:
+        diff = aux_data.local_energy - loss
     # Due to the simultaneous requirements of KFAC (calling convention must be
     # (params, rng, data)) and Laplacian calculation (only want to take
     # Laplacian wrt electron positions) we need to change up the calling

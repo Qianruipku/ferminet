@@ -252,6 +252,11 @@ def default() -> ml_collections.ConfigDict:
           # Width of Gaussian used for random moves for RMW or step size for
           # HMC.
           'move_width': 0.02,
+          'enhance':{
+            'factor': 0.0,  # If >0, enhance the sample distribution by this factor
+            'rcut': 0.5,
+            'alpha': 0.0
+          },
           # Minimum allowed MCMC step width.
           'min_width': 1e-3,
           # Standard deviation used for large-step proposals in the mixture

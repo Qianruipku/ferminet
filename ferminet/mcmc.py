@@ -26,6 +26,7 @@ from jax import lax
 from jax import numpy as jnp
 import numpy as np
 from typing import Tuple
+from ferminet.utils.min_distance import min_image_distance_triclinic, Lattice
 
 
 def _harmonic_mean(x, atoms):
@@ -174,6 +175,136 @@ def mh_update(
   return new_data, key, lp_new, num_accepts
 
 
+def mh_update_contact(
+    params: networks.ParamTree,
+    f: networks.LogFermiNetLike,
+    data: networks.FermiNetData,
+    key: chex.PRNGKey,
+    lp_1,
+    num_accepts,
+    stddev: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    ndim: int,
+    lat: Lattice | None = None,
+    alpha: float = 0.0,
+):
+  """Contact-biased MH: per-species updates, move nearest electron toward positron.
+
+  Behaviour:
+  - For each species (like `mh_update`), freeze other species and propose
+    Gaussian moves for this species only.
+  - Additionally, for each walker we find the electron nearest the positron
+    (positron assumed last particle) and add an `alpha*(rp-ri)` shift to that
+    electron in the species where it belongs.
+  - The proposal is asymmetric; we compute the log q(R'|R)-log q(R|R') term
+    for the moved block and include it in the MH ratio.
+  """
+  # Prepare shapes
+  key_loop = key
+  x1 = data.positions  # (batch, n_particles*ndim)
+  batch_size = x1.shape[0]
+  n_particles = x1.shape[1] // ndim
+
+  batch_idx = jnp.arange(batch_size)
+
+  # mh_update_contact requires lattice-aware minimum-image distances.
+  if lat is None:
+    raise NotImplementedError("mh_update_contact requires `lat` (periodic boundaries)")
+
+  # We'll iterate species (small number) and perform vectorized batch moves.
+  start_idx = 0
+  new_pos = x1
+  for species_idx, nspecies in enumerate(nspins):
+    key_loop, key_noise = jax.random.split(key_loop)
+    species_width = stddev if jnp.ndim(stddev) == 0 else stddev[species_idx]
+
+    # slice for this species in flattened coords
+    slice_start = start_idx * ndim
+    slice_end = (start_idx + nspecies) * ndim
+    x1_species = new_pos[:, slice_start:slice_end]
+    # reshape according to current positions (so selection uses up-to-date state)
+    x1_species_reshaped = jnp.reshape(x1_species, (batch_size, nspecies, ndim))
+
+    # Get positron position (last particle) without reshaping the whole array.
+    pos_positron = jnp.reshape(new_pos[:, -ndim:], (batch_size, ndim))
+    pos_positron_expanded = pos_positron[:, None, :]
+    # If this species block contains the positron, perform a plain Gaussian
+    # proposal (no contact shift) for that block and continue.
+    if start_idx <= (n_particles - 1) < start_idx + nspecies:
+      noise = jax.random.normal(key_noise, shape=(batch_size, nspecies, ndim))
+      x2_species_reshaped = x1_species_reshaped + species_width * noise
+      x2 = new_pos.at[:, slice_start:slice_end].set(
+        jnp.reshape(x2_species_reshaped, (batch_size, nspecies * ndim)))
+      lp_2 = 2.0 * f(params, x2, data.spins, data.atoms, data.charges)
+      ratio = lp_2 - lp_1
+      new_pos, key_loop, lp_1, num_accepts = mh_accept(
+        new_pos, x2, lp_1, lp_2, ratio, key_loop, num_accepts, species_idx)
+      start_idx += nspecies
+      continue
+
+    diff = pos_positron_expanded - x1_species_reshaped
+    diff_flat = jnp.reshape(diff, (-1, ndim))
+    dr, dr_norm = min_image_distance_triclinic(diff_flat, lat)
+    dr_norm = jnp.reshape(dr_norm, (batch_size, nspecies))
+    chosen_local = jnp.argmin(dr_norm, axis=1)
+
+    # gaussian noise proposal for all particles of this species
+    noise = jax.random.normal(key_noise, shape=(batch_size, nspecies, ndim))
+    x2_species_reshaped = x1_species_reshaped + species_width * noise
+
+    # use min-image vector dr (rp - ri) for the shift
+    dr_reshaped = jnp.reshape(dr, (batch_size, nspecies, ndim))
+    chosen_dr = dr_reshaped[batch_idx, chosen_local, :]
+    shift = alpha * chosen_dr
+
+    # apply alpha shift to chosen local index
+    x2_species_reshaped = x2_species_reshaped.at[batch_idx, chosen_local, :].add(shift)
+
+    # construct full proposed positions by replacing this species block
+    x2 = new_pos.at[:, slice_start:slice_end].set(
+        jnp.reshape(x2_species_reshaped, (batch_size, nspecies * ndim)))
+
+    # compute asymmetric proposal log-density difference for this species block
+    # forward delta and forward residuals (uses chosen_local computed above)
+    delta_fwd = jnp.zeros_like(x1_species_reshaped)
+    delta_fwd = delta_fwd.at[batch_idx, chosen_local, :].set(shift)
+    eps_fwd = x2_species_reshaped - x1_species_reshaped - delta_fwd
+
+    # Recompute chosen index on the proposed configuration (reverse selector).
+    # This handles the small-probability case where the argmin index changes.
+    diff_rev = pos_positron_expanded - x2_species_reshaped
+    diff_rev_flat = jnp.reshape(diff_rev, (-1, ndim))
+    dr_rev, dr_rev_norm = min_image_distance_triclinic(diff_rev_flat, lat)
+    dr_rev_norm = jnp.reshape(dr_rev_norm, (batch_size, nspecies))
+    chosen_local_rev = jnp.argmin(dr_rev_norm, axis=1)
+
+    # reverse delta (what reverse proposal would have added) and reverse residuals
+    delta_rev = jnp.zeros_like(x1_species_reshaped)
+    dr_rev_reshaped = jnp.reshape(dr_rev, (batch_size, nspecies, ndim))
+    chosen_dr_rev = dr_rev_reshaped[batch_idx, chosen_local_rev, :]
+    # dr_rev equals rp - ri', so reverse shift = alpha * dr_rev
+    shift_rev = alpha * chosen_dr_rev
+    delta_rev = delta_rev.at[batch_idx, chosen_local_rev, :].set(shift_rev)
+    eps_rev = x1_species_reshaped - x2_species_reshaped - delta_rev
+
+    sigma2 = (species_width ** 2)
+    norm_fwd = jnp.sum((eps_fwd ** 2), axis=(1, 2)) / sigma2
+    norm_rev = jnp.sum((eps_rev ** 2), axis=(1, 2)) / sigma2
+    log_q_diff = 0.5 * (norm_rev - norm_fwd)
+
+    lp_2 = 2.0 * f(params, x2, data.spins, data.atoms, data.charges)
+    ratio = lp_2 - lp_1 - log_q_diff
+
+    # accept/reject for this species block (species_idx used for per-species counting)
+    new_pos, key_loop, lp_1, num_accepts = mh_accept(
+        new_pos, x2, lp_1, lp_2, ratio, key_loop, num_accepts, species_idx)
+
+    start_idx += nspecies
+
+  new_data = networks.FermiNetData(**(dict(data) | {'positions': new_pos}))
+  return new_data, key_loop, lp_1, num_accepts
+
+
 def mh_block_update(
     params: networks.ParamTree,
     f: networks.LogFermiNetLike,
@@ -271,10 +402,12 @@ def make_mcmc_step(batch_network,
                    ndim,
                    steps=10,
                    atoms=None,
+                   lat: Lattice = None,
                    sample_all=True,
                    blocks=1,
                    mix_width: float = 1.0,
-                   mix_prob: float = 0.0):
+                   mix_prob: float = 0.0,
+                   enhance_alpha: float = 0.0):
   """Creates the MCMC step function.
 
   Args:
@@ -294,6 +427,7 @@ def make_mcmc_step(batch_network,
   Returns:
     Callable which performs the set of MCMC steps.
   """
+  enhance_contact = enhance_alpha > 0.0
   inner_fun = mh_block_update if blocks > 1 else mh_update
 
   def mcmc_step(params, data, key, width):
@@ -312,6 +446,16 @@ def make_mcmc_step(batch_network,
     pos = data.positions
 
     def step_fn(i, x):
+      if enhance_contact and blocks == 1:
+        return mh_update_contact(
+            params,
+            batch_network,
+            *x,
+            stddev=width,
+            nspins=nspins,
+            ndim=ndim,
+            lat=lat,
+            alpha=enhance_alpha)
       return inner_fun(
           params,
           batch_network,
