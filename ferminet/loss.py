@@ -50,6 +50,7 @@ class AuxiliaryLossData:
   local_energy_mat: jax.Array | None = None
   s_ij: jax.Array | None = None
   mean_s_ij: jax.Array | None = None
+  ebias: jax.Array | None = None
   local_enhance_factor: jax.Array | None = None
   mean_enhance_factor: jax.Array | None = None
 
@@ -227,6 +228,7 @@ def make_loss(network: networks.LogFermiNetLike,
     e_l, e_l_mat = batch_local_energy(params, keys, data)
     enhance_mat = None
     mean_enhance = None
+    ebias = None
     # If inverse_enhance_sample provided we compute weighted expectation
     if inverse_enhance_sample is not None:
       enhance_mat = inverse_enhance_sample(data.positions)
@@ -236,6 +238,12 @@ def make_loss(network: networks.LogFermiNetLike,
       # variance of weighted estimator
       loss_diff = e_l - loss
       variance = constants.pmean(jnp.mean(enhance_mat * (loss_diff * jnp.conj(loss_diff)))) / mean_enhance
+      # Bias correction for variance of weighted estimator
+      w2 = enhance_mat**2
+      bias_l = - loss_diff * w2
+      mean_bias = constants.pmean(jnp.mean(bias_l))
+      mean_w2 = constants.pmean(jnp.mean(w2))
+      ebias = mean_bias / mean_w2
     else:
       loss = constants.pmean(jnp.mean(e_l))
       loss_diff = e_l - loss
@@ -243,6 +251,7 @@ def make_loss(network: networks.LogFermiNetLike,
     return loss, AuxiliaryLossData(
         energy=loss,
         variance=variance.real,
+        ebias = ebias,
         local_energy=e_l,
         clipped_energy=e_l,
         local_energy_mat=e_l_mat,

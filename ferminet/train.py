@@ -610,6 +610,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
   # Set up logging and observables
   train_schema = ['step', 'energy', 'ewmean', 'ewvar', 'pmove']
+  if inverse_enhance_sample is not None:
+    train_schema += ['ebias']
 
   if cfg.system.states:
     energy_matrix_file = open(
@@ -1254,6 +1256,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             'ewvar': np.asarray(weighted_stats.variance),
             'pmove': np.asarray(np.mean(pmove)),
         }
+        if aux_data.ebias is not None:
+          writer_kwargs['ebias'] = np.asarray(aux_data.ebias[0] / cfg.batch_size)
+
         for key in observable_data:
           obs_data = observable_data[key]
           if cfg.system.states:
