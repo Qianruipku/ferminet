@@ -1113,7 +1113,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       loss = jnp.real(loss[0])
       # per batch variance isn't informative. Use weighted mean and variance
       # instead.
-      if not jnp.isnan(loss):
+      if not jnp.isnan(loss) and not jnp.isinf(loss):
         weighted_stats = statistics.exponentialy_weighted_stats(
           alpha=0.1, observation=loss, previous_stats=weighted_stats)
       pmove = pmove[0]

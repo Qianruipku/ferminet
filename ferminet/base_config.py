@@ -253,6 +253,7 @@ def default() -> ml_collections.ConfigDict:
           # HMC.
           'move_width': 0.02,
           'enhance':{
+            'type': 'exp',  # One of 'exp', 'inverse'
             'factor': 0.0,  # If >0, enhance the sample distribution by this factor
             'rcut': 0.5,
             'alpha': 0.0

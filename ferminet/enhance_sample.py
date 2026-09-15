@@ -8,6 +8,7 @@ def make_enhance_sample_fn(logabs_network, lat: Lattice, cfg):
   """
   factor = cfg.mcmc.enhance.factor
   rcut = cfg.mcmc.enhance.rcut
+  type = cfg.mcmc.enhance.type
 
   def enhance_factor_fn(positions):
     """Compute the enhancement factor for the sample distribution."""
@@ -16,8 +17,15 @@ def make_enhance_sample_fn(logabs_network, lat: Lattice, cfg):
     pos_electrons = positions[:-1]
     dr = pos_electrons - pos_positron
     _, dr_norm = min_image_distance_triclinic(dr, lat)
-    enhance_exp = jnp.exp(-(dr_norm / rcut) ** 2)
-    enhance_factor = 1.0 + factor * jnp.sum(enhance_exp)
+    if type == 'exp':
+      enhance_exp = jnp.exp(-(dr_norm / rcut) ** 2)
+      enhance_factor = 1.0 + factor * jnp.sum(enhance_exp)
+    elif type == 'inverse':
+      enhance_exp = jnp.clip(factor / (dr_norm ** 2 + 1e-10), a_min=1e-10, a_max=1e3)
+      enhance_factor = 1.0 + jnp.sum(enhance_exp)
+    else:
+      raise ValueError("Invalid enhancement type. Must be 'exp' or 'inverse'.")
+    
     return enhance_factor
 
   def enhance_sample(params, positions, spins, atoms, charges):
