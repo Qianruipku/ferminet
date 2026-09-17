@@ -16,7 +16,7 @@ def make_enhance_sample_fn(logabs_network, lat: Lattice, cfg):
     pos_positron = positions[-1]
     pos_electrons = positions[:-1]
     dr = pos_electrons - pos_positron
-    _, dr_norm = min_image_distance_triclinic(dr, lat)
+    _, dr_norm = min_image_distance_triclinic(dr, lat, cfg.system.pbc.r_search)
     if type == 'exp':
       enhance_exp = jnp.exp(-(dr_norm / rcut) ** 2)
       enhance_factor = 1.0 + factor * jnp.sum(enhance_exp)

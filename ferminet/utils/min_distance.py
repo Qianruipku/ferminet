@@ -42,7 +42,7 @@ def min_image_distance_cubic(r_ij : jnp.ndarray,
     # Smooth wrapping using trigonometric functions, helpful for auto-diff
     # angle = jnp.arctan2(jnp.sin(2 * jnp.pi * ds), jnp.cos(2 * jnp.pi * ds))
     # ds = angle / (2 * jnp.pi)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    ds = ds - jnp.floor(ds + 0.5) # wrap to [-0.5, 0.5)
 
     dr_min = jnp.einsum('ij,kj->ik', ds, lattice_vector)
     dr_norm = jnp.linalg.norm(dr_min, axis=1)
@@ -72,7 +72,7 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
     
     # Convert to fractional coordinates and wrap to primary cell
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    ds = ds - jnp.floor(ds + 0.5)
 
     # Generate all possible integer offsets
     rng = jnp.arange(-radius, radius+1)
@@ -119,7 +119,7 @@ def find_neighbors_within_cutoff(r_ij : jnp.ndarray,
     
     # Convert to fractional coordinates and wrap to primary cell
     ds = jnp.einsum('ij,kj->ik', r_ij, lattice_inv)
-    ds = jnp.mod(ds + 0.5, 1) - 0.5
+    ds = ds - jnp.floor(ds + 0.5)
 
     # Generate all possible integer offsets
     rng = jnp.arange(-radius, radius+1)

@@ -14,7 +14,7 @@
 
 """Attention-based networks for FermiNet."""
 
-from typing import Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 import attr
 import chex
@@ -338,6 +338,11 @@ def make_fermi_net(
     envelope: Optional[envelopes.Envelope] = None,
     feature_layer: Optional[networks.FeatureLayer] = None,
     jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.SIMPLE_EE,
+    jastrow_rshift: jnp.ndarray = None,
+    jastrow_cut_length: float = 2.0,
+    jastrow_order: int = 5,
+    jastrow_C: float = 4.0,
+    jastrow_pair_kind: Optional[Any] = None,
     complex_output: bool = False,
     bias_orbitals: bool = False,
     rescale_inputs: bool = False,
@@ -400,6 +405,11 @@ def make_fermi_net(
       envelope=envelope,
       feature_layer=feature_layer,
       jastrow=jastrow,
+      jastrow_rshift=jastrow_rshift,
+      jastrow_cut_length=jastrow_cut_length,
+      jastrow_order=jastrow_order,
+      jastrow_C=jastrow_C,
+      jastrow_pair_kind=jastrow_pair_kind,
       complex_output=complex_output,
       bias_orbitals=bias_orbitals,
       full_det=True,  # Required for Psiformer.

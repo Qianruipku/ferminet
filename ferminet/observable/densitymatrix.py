@@ -17,7 +17,6 @@ import chex
 import os
 
 from ferminet import network_blocks
-from ferminet.utils.min_distance import min_image_distance_triclinic, Lattice
 from ferminet import constants
 
 

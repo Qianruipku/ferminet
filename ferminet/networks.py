@@ -22,6 +22,7 @@ from ferminet import envelopes
 from ferminet import jastrows
 from ferminet import network_blocks
 from ferminet.utils import Lattice
+from ferminet.utils.min_distance import min_image_distance_triclinic
 import jax
 import jax.numpy as jnp
 from typing_extensions import Protocol
@@ -295,7 +296,12 @@ class BaseNetworkOptions:
   feature_layer: FeatureLayer = None
   jastrow: jastrows.JastrowType = jastrows.JastrowType.NONE
   jastrow_rshift: jnp.ndarray = None
+  jastrow_cut_length: float = 2.0
+  jastrow_order: int = 5
+  jastrow_C: float = 3.0
+  jastrow_pair_kind: Optional[Any] = None
   complex_output: bool = False
+  r_search: int = 0
 
 
 @attr.s(auto_attribs=True, kw_only=True)
@@ -1331,7 +1337,11 @@ def make_orbitals(
 
   # Optional Jastrow factor.
   jastrow_init, jastrow_apply = jastrows.get_jastrow(
-      options.jastrow, options.jastrow_rshift, nspins, particle_masses, particle_charges, ndim)
+      options.jastrow, options.jastrow_rshift, nspins, particle_masses, particle_charges, ndim,
+      cut_length=options.jastrow_cut_length,
+      poly_order=options.jastrow_order,
+      C=options.jastrow_C,
+      pair_kind=options.jastrow_pair_kind,)
 
   def init(key: chex.PRNGKey) -> ParamTree:
     """Returns initial random parameters for creating orbitals.
@@ -1487,14 +1497,33 @@ def make_orbitals(
     # Added pre-determinant for compatibility with pretraining.
     if jastrow_apply is not None:
       if apply_pbc:
-        s_ee = jnp.einsum('il,jkl->jki', lat.lattice_inv, ee)
-        lattice_metric = lat.lattice_vector_T @ lat.lattice_vector
-        n = s_ee.shape[0]
-        s_ee += jnp.eye(n)[..., None]
-        r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
-      jastrow = jnp.exp(
-          jastrow_apply(r_ee, params['jastrow'], nspins) / sum(nspins)
-      )
+        if options.jastrow == jastrows.JastrowType.MIXED_EE:
+          # MIXED_EE: CUT_EE pairs use min-image r_ee; SIMPLE_EE pairs use
+          # periodic-norm r_ee. Compute both and pass as a tuple.
+          n = ee.shape[0]
+          ee_safe = ee + jnp.eye(n, dtype=ee.dtype)[..., None]
+          _, r_ee_cut = min_image_distance_triclinic(
+              ee_safe.reshape(-1, ee.shape[-1]), lat, options.r_search)
+          r_ee_cut = r_ee_cut.reshape(n, n) * (1.0 - jnp.eye(n, dtype=ee.dtype))
+          s_ee = jnp.einsum('il,jkl->jki', lat.lattice_inv, ee)
+          lattice_metric = lat.lattice_vector_T @ lat.lattice_vector
+          s_ee_safe = s_ee + jnp.eye(n)[..., None]
+          r_ee_simple = periodic_norm(lattice_metric, s_ee_safe) * (1.0 - jnp.eye(n))
+          r_ee = (r_ee_cut, r_ee_simple)
+        elif options.jastrow == jastrows.JastrowType.CUT_EE:
+          n = ee.shape[0]
+          ee_safe = ee + jnp.eye(n, dtype=ee.dtype)[..., None]
+          _, r_ee = min_image_distance_triclinic(
+              ee_safe.reshape(-1, ee.shape[-1]), lat, options.r_search)
+          r_ee = r_ee.reshape(n, n) * (1.0 - jnp.eye(n, dtype=ee.dtype))
+        else:
+          s_ee = jnp.einsum('il,jkl->jki', lat.lattice_inv, ee)
+          lattice_metric = lat.lattice_vector_T @ lat.lattice_vector
+          n = s_ee.shape[0]
+          s_ee += jnp.eye(n)[..., None]
+          r_ee = periodic_norm(lattice_metric, s_ee) * (1.0 - jnp.eye(n))
+      jastrow_log = jastrow_apply(r_ee, params['jastrow'], nspins) / sum(nspins)
+      jastrow = jnp.exp(jnp.clip(jastrow_log, -30.0, 30.0))
       orbitals = [orbital * jastrow for orbital in orbitals]
 
     return orbitals
@@ -1633,6 +1662,10 @@ def make_fermi_net(
     feature_layer: Optional[FeatureLayer] = None,
     jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.NONE,
     jastrow_rshift: jnp.ndarray = None,
+    jastrow_cut_length: float = 1.0,
+    jastrow_order: int = 3,
+    jastrow_C: float = 3.0,
+    jastrow_pair_kind: Optional[Any] = None,
     complex_output: bool = False,
     bias_orbitals: bool = False,
     full_det: bool = True,
@@ -1647,6 +1680,7 @@ def make_fermi_net(
     electron_nuclear_aux_dims: Tuple[int, ...] = tuple(),
     nuclear_embedding_dim: int = 0,
     schnet_electron_nuclear_convolutions: Tuple[int, ...] = tuple(),
+    r_search: int = 0,
 ) -> Network:
   """Creates functions for initializing parameters and evaluating ferminet.
 
@@ -1724,6 +1758,10 @@ def make_fermi_net(
       feature_layer=feature_layer,
       jastrow=jastrow,
       jastrow_rshift=jastrow_rshift,
+      jastrow_cut_length=jastrow_cut_length,
+      jastrow_order=jastrow_order,
+      jastrow_C=jastrow_C,
+      jastrow_pair_kind=jastrow_pair_kind,
       complex_output=complex_output,
       bias_orbitals=bias_orbitals,
       full_det=full_det,
@@ -1736,6 +1774,7 @@ def make_fermi_net(
       nuclear_embedding_dim=nuclear_embedding_dim,
       schnet_electron_nuclear_convolutions=schnet_electron_nuclear_convolutions,
       use_last_layer=use_last_layer,
+      r_search=r_search
   )
 
   if options.envelope.apply_type == envelopes.EnvelopeType.PRE_ORBITAL:

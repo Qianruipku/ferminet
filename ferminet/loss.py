@@ -224,6 +224,7 @@ def make_loss(network: networks.LogFermiNetLike,
       local energy per MCMC configuration. The loss and variance are averaged
       over the batch and over all devices inside a pmap.
     """
+    
     keys = jax.random.split(key, num=data.positions.shape[0])
     e_l, e_l_mat = batch_local_energy(params, keys, data)
     enhance_mat = None
