@@ -10,6 +10,7 @@ import ml_collections
 from ferminet import networks
 from ferminet import envelopes
 from ferminet import psiformer
+import ferminet.pbc.hamiltonian as pbc_hamiltonian
 from ferminet.utils import system, Lattice
 import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
@@ -85,6 +86,7 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
             include_r_ae=include_r_ae,
             feature_order1=cfg.system.pbc.get('feature_order1', 1),
             feature_order2=cfg.system.pbc.get('feature_order2', 1),
+            smooth_ree=cfg.system.pbc.get('smooth_ree', False),
         )
     
     # Create envelope function
@@ -140,8 +142,36 @@ def create_network_from_config(cfg: ml_collections.ConfigDict):
         )
     else:
         raise ValueError(f"Unknown network type: {cfg.network.network_type}")
+    signed_network = network.apply
+    pp_symbols = cfg.system.get('pp', {'symbols': None}).get('symbols')
+    local_energy = pbc_hamiltonian.local_energy(
+            f=signed_network,
+            charges=charges,
+            nspins=cfg.system.particles,
+            ndim=cfg.system.ndim,
+            particle_charges=cfg.system.charges,
+            particle_masses=cfg.system.masses,
+            use_scan=False,
+            complex_output=use_complex,
+            laplacian_method=cfg.optim.get('laplacian', 'default'),
+            states=cfg.system.get('states', 0),
+            state_specific=(cfg.optim.objective == 'vmc_overlap'),
+            pp_type=cfg.system.get('pp', {'type': 'ccecp'}).get('type'),
+            pp_symbols=pp_symbols if cfg.system.get('use_pp') else None,
+            lattice_vectors=cfg.system.pbc.lattice_vectors,
+            convergence_radius=cfg.system.pbc.convergence_radius,
+            r_search=cfg.system.pbc.r_search)
+    batch_local_energy = jax.vmap(
+          local_energy,
+          in_axes=(
+              None,
+              0,
+              networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0),
+          ),
+          out_axes=(0, 0)
+      )
     
-    return network, atoms, charges
+    return network, atoms, charges, batch_local_energy
 
 
 def compute_wavefunction_value(network, params, positions, spins, atoms, charges):
@@ -172,7 +202,7 @@ def main_example():
     cfg = check_params(params, cfg)
 
     # 3. Create network
-    network, atoms, charges = create_network_from_config(cfg)
+    network, atoms, charges, batch_local_energy = create_network_from_config(cfg)
     
     # 4. Prepare input data (example)
     spins = data.spins[0, 0, 0]
@@ -200,6 +230,14 @@ def main_example():
         print(f"Wavefunction value: {wavefunction_value}")
     if batch_value is not None:
         print(f"Batch wavefunction values: {batch_value}")
+
+    data_local = networks.FermiNetData(positions=batch_positions, spins=batch_spins, atoms=batch_atoms, charges=batch_charges)
+    key = jax.random.PRNGKey(99)
+    keys = jax.random.split(key, num=data_local.positions.shape[0])
+    batch_energy,_ = batch_local_energy(
+        params, keys, data_local
+    )
+    print(f"Batch local energy values: {batch_energy}")
 
 if __name__ == "__main__":
     main_example()

@@ -485,6 +485,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         envelope=envelope,
         feature_layer=feature_layer,
         jastrow=cfg.network.get('jastrow', 'default'),
+        jastrow_rshift=cfg.network.jastrow_rshift,
         bias_orbitals=cfg.network.bias_orbitals,
         full_det=cfg.network.full_det,
         rescale_inputs=cfg.network.get('rescale_inputs', False),

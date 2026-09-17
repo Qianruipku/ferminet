@@ -73,6 +73,7 @@ def _jastrow_ee(
 
 
 def make_simple_ee_jastrow(
+      rshift: jnp.ndarray,
       nspins: jnp.ndarray,
       masses: jnp.ndarray,
       charges: jnp.ndarray,
@@ -85,8 +86,14 @@ def make_simple_ee_jastrow(
   def simple_ee_cusp_fun(
       r: jnp.ndarray, cusp: float, alpha: jnp.ndarray
   ) -> jnp.ndarray:
-    """Jastrow function satisfying electron cusp condition."""
-    return -(cusp * alpha**2) / (alpha + r)
+    """Jastrow function satisfying electron cusp condition.
+       ln j(r_shift) = 0, if rshift is None, then ln j(\infty) = 0
+    """
+
+    if rshift is not None:
+      return cusp * (alpha**2 / (alpha + rshift) - alpha**2 / (alpha + r))
+    else:
+      return -(cusp * alpha**2) / (alpha + r)
 
   def init() -> Mapping[str, jnp.ndarray]:
     params = {}
@@ -109,6 +116,7 @@ def make_simple_ee_jastrow(
 
 def get_jastrow(
       jastrow: JastrowType,
+      jastrow_rshift: jnp.ndarray,
       nspins: jnp.ndarray,
       masses: jnp.ndarray,
       charges: jnp.ndarray,
@@ -117,7 +125,7 @@ def get_jastrow(
   jastrow_init, jastrow_apply = None, None
   if jastrow == JastrowType.SIMPLE_EE:
     jastrow_init, jastrow_apply = make_simple_ee_jastrow(
-      nspins, masses, charges, ndim)
+      jastrow_rshift, nspins, masses, charges, ndim)
   elif jastrow != JastrowType.NONE:
     raise ValueError(f'Unknown Jastrow Factor type: {jastrow}')
 

@@ -371,6 +371,8 @@ def default() -> ml_collections.ConfigDict:
           # If specified, include a pre-determinant Jastrow factor.
           # One of 'default' (use network_type default), 'none', or 'simple_ee'.
           'jastrow': 'default',
+          # If >0, ln(jastrow) = cusp * (alpha^2/(alpha+r_shift) - alpha^2/(alpha+r))
+          'jastrow_rshift': None,
           # If true, rescale the inputs so they grow as log(|r|)
           'rescale_inputs': False,
           # String set to module.make_feature_layer, where make_feature_layer is
