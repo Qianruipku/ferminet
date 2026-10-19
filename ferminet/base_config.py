@@ -322,7 +322,9 @@ def default() -> ml_collections.ConfigDict:
               # If None, use default behavior based on number of species:
               #   - 2 species: same-spin vs different-spin channels
               #   - 3 species: same-particle, electron-spin, electron-positron channels  
-              #   - other: diagonal vs off-diagonal channels
+              #   - 4 species: four same-species, electron-spin,
+              #     proton-spin, and electron-proton channels
+              #     (ordered electron up/down, then proton up/down)
               # If provided, should be a tuple of tuples specifying which block indices
               # belong to each interaction channel. Block indices are calculated as 
               # block_idx = i * nspecies + j for species pair (i,j).

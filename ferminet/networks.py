@@ -317,7 +317,8 @@ class FermiNetOptions(BaseNetworkOptions):
       specified particle/species groups. Each group is a tuple of species
       indices. Only used when separate_spin_channels is True. When
       separate_spin_channels is False, the one-electron stream always uses a
-      single shared channel.
+      single shared channel. If unset, occupied species are grouped in
+      consecutive pairs.
     separate_spin_channels: If True, use separate two-electron streams for
       spin-parallel and spin-antiparallel  pairs of electrons. If False, use the
       same stream for all pairs of electrons.
@@ -381,24 +382,36 @@ def _default_interaction_pairs(nspins: Tuple[int, ...]) -> Tuple[Tuple[int, ...]
         (2, 6, 5, 7),     # electron-positron
     )
 
+  elif nspecies == 4:
+    # Species order: electron spin-up, electron spin-down,
+    # proton spin-up, proton spin-down.
+    return (
+        (0, 5),                       # same-spin electron pairs
+        (10, 15),                     # same-spin proton pairs
+        (1, 4),                       # electron spin-up / spin-down
+        (11, 14),                     # proton spin-up / spin-down
+        (2, 3, 6, 7, 8, 9, 12, 13),  # electron-proton
+    )
+
   else:
     raise ValueError(
-        "interaction_pairs must be provided when nspecies != 2 or 3"
+        "interaction_pairs must be provided when nspecies is not 2, 3, or 4"
     )
 
 
 def _default_single_particle_groups(
     nspins: Tuple[int, ...],
 ) -> Tuple[Tuple[int, ...], ...]:
-  """Returns the default one-electron channel grouping."""
+  """Returns default one-electron channels for consecutive species pairs."""
   groups = []
-  leading_species = tuple(i for i in (0, 1) if i < len(nspins) and nspins[i] > 0)
-  if leading_species:
-    groups.append(leading_species)
-
-  for species_idx in range(2, len(nspins)):
-    if nspins[species_idx] > 0:
-      groups.append((species_idx,))
+  for start in range(0, len(nspins), 2):
+    group = tuple(
+        species_idx
+        for species_idx in range(start, min(start + 2, len(nspins)))
+        if nspins[species_idx] > 0
+    )
+    if group:
+      groups.append(group)
 
   return tuple(groups)
 

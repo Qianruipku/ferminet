@@ -73,6 +73,16 @@ def _network_options():
 
 class NetworksTest(parameterized.TestCase):
 
+  @parameterized.parameters(
+      ((1, 1, 1, 1), ((0, 1), (2, 3))),
+      ((1, 1, 1), ((0, 1), (2,))),
+      ((1, 0, 2, 3), ((0,), (2, 3))),
+  )
+  def test_default_single_particle_groups(self, nspins, expected_groups):
+    self.assertEqual(
+        networks._default_single_particle_groups(nspins), expected_groups
+    )
+
   @parameterized.named_parameters(_antisymmtry_options())
   def test_antisymmetry(self, envelope_label, dtype):
     """Check that the Fermi Net is symmetric."""
