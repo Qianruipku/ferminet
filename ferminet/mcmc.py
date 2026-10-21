@@ -79,6 +79,21 @@ def mh_accept(x1, x2, lp_1, lp_2, ratio, key, num_accepts, species_idx):
   return x_new, key, lp_new, num_accepts
 
 
+def _random_same_spin_permutation(x, key, nparticles, ndim):
+  """Randomly permutes particles within a spin species for each walker."""
+  if nparticles < 2:
+    return x
+
+  batch_size = x.shape[0]
+  positions = jnp.reshape(x, (batch_size, nparticles, ndim))
+  keys = jax.random.split(key, batch_size)
+  positions = jax.vmap(
+      lambda walker, walker_key: jax.random.permutation(
+          walker_key, walker, axis=0)
+  )(positions, keys)
+  return jnp.reshape(positions, x.shape)
+
+
 def mh_update(
     params: networks.ParamTree,
     f: networks.LogFermiNetLike,
@@ -92,6 +107,7 @@ def mh_update(
     atoms=None,
     blocks=1,
     i=0,
+    same_spin_exchange: bool = False,
 ):
   """Performs one Metropolis-Hastings step using an all-electron move.
 
@@ -112,6 +128,8 @@ def mh_update(
     ndim: dimensionality of system.
     blocks: Ignored.
     i: Ignored.
+    same_spin_exchange: If True, randomly permute particles within each spin
+      species before proposing a Gaussian move.
 
   Returns:
     (x, key, lp, num_accepts), where:
@@ -128,7 +146,20 @@ def mh_update(
   start_idx = 0
   x1 = data.positions
   if jnp.ndim(stddev) == 0:
-    x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
+    proposal_base = x1
+    if same_spin_exchange:
+      key_exchange, subkey = jax.random.split(subkey)
+      start_idx = 0
+      for nspecies in nspins:
+        species_start = start_idx * ndim
+        species_end = (start_idx + nspecies) * ndim
+        proposal_base = proposal_base.at[:, species_start:species_end].set(
+            _random_same_spin_permutation(
+                x1[:, species_start:species_end], key_exchange, nspecies, ndim))
+        key_exchange, _ = jax.random.split(key_exchange)
+        start_idx += nspecies
+    x2 = proposal_base + stddev * jax.random.normal(
+        subkey, shape=x1.shape)
     lp_2 = 2.0 * f(
         params, x2, data.spins, data.atoms, data.charges
     )  # log prob of proposal
@@ -139,10 +170,16 @@ def mh_update(
     for species_idx, nspecies in enumerate(nspins):
       species_width = stddev[species_idx]
       species_shape = (x1.shape[0], nspecies * ndim)
-
-      x2 = x1.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].add(
-          species_width *
-          jax.random.normal(subkey, shape=species_shape))  # proposal
+      species_start = start_idx * ndim
+      species_end = (start_idx + nspecies) * ndim
+      proposal_base = x1[:, species_start:species_end]
+      if same_spin_exchange:
+        key_exchange, subkey = jax.random.split(subkey)
+        proposal_base = _random_same_spin_permutation(
+            proposal_base, key_exchange, nspecies, ndim)
+      x2 = x1.at[:, species_start:species_end].set(
+          proposal_base + species_width * jax.random.normal(
+              subkey, shape=species_shape))
       lp_2 = 2. * f(params, x2, data.spins, data.atoms, data.charges)  # log prob of proposal
       ratio = lp_2 - lp_1
 
@@ -169,6 +206,7 @@ def mh_block_update(
     atoms=None,
     blocks=1,
     i=0,
+    same_spin_exchange: bool = False,
 ):
   """Performs one Metropolis-Hastings step for a block of electrons.
 
@@ -185,6 +223,8 @@ def mh_block_update(
     ndim: dimensionality of system.
     blocks: number of blocks to split electron updates into.
     i: index of block of electrons to move.
+    same_spin_exchange: If True, randomly permute particles within each spin
+      species before proposing a Gaussian move.
 
   Returns:
     (x, key, lp, num_accepts), where:
@@ -214,7 +254,21 @@ def mh_block_update(
   twist_all = data.twist.reshape(blocks, -1, data.twist.shape[-1])
   twist = twist_all[ii]
   if jnp.ndim(stddev) == 0:
-    x2 = x1 + stddev * jax.random.normal(subkey, shape=x1.shape)  # proposal
+    proposal_base = x1
+    if same_spin_exchange:
+      key_exchange, subkey = jax.random.split(subkey)
+      start_idx = 0
+      for nspecies in nspins:
+        species_start = start_idx * ndim
+        species_end = (start_idx + nspecies) * ndim
+        proposal_base = proposal_base.at[:, species_start:species_end].set(
+            _random_same_spin_permutation(
+                x1[:, species_start:species_end], key_exchange, nspecies,
+                ndim))
+        key_exchange, _ = jax.random.split(key_exchange)
+        start_idx += nspecies
+    x2 = proposal_base + stddev * jax.random.normal(
+        subkey, shape=x1.shape)
     lp_2 = 2.0 * f(
         params, x2, spins, atoms, charges, twist
     )  # log prob of proposal
@@ -225,10 +279,16 @@ def mh_block_update(
     for species_idx, nspecies in enumerate(nspins):
       species_width = stddev[species_idx]
       species_shape = (x1.shape[0], nspecies * ndim)
-
-      x2 = x1.at[:, start_idx * ndim:(start_idx + nspecies) * ndim].add(
-          species_width *
-          jax.random.normal(subkey, shape=species_shape))  # proposal
+      species_start = start_idx * ndim
+      species_end = (start_idx + nspecies) * ndim
+      proposal_base = x1[:, species_start:species_end]
+      if same_spin_exchange:
+        key_exchange, subkey = jax.random.split(subkey)
+        proposal_base = _random_same_spin_permutation(
+            proposal_base, key_exchange, nspecies, ndim)
+      x2 = x1.at[:, species_start:species_end].set(
+          proposal_base + species_width * jax.random.normal(
+              subkey, shape=species_shape))
       lp_2 = 2. * f(params, x2, spins, atoms, charges, twist)  # log prob of proposal
       ratio = lp_2 - lp_1
 
@@ -253,7 +313,8 @@ def make_mcmc_step(logabs_network,
                    steps=10,
                    atoms=None,
                    sample_all=True,
-                   blocks=1):
+                   blocks=1,
+                   same_spin_exchange: bool = False):
   """Creates the MCMC step function.
 
   Args:
@@ -274,9 +335,10 @@ def make_mcmc_step(logabs_network,
     Callable which performs the set of MCMC steps.
   """
   inner_fun = mh_block_update
+  if same_spin_exchange and blocks > 1:
+    raise ValueError("same_spin_exchange is only supported when blocks=1")
 
   batch_network = jax.vmap(logabs_network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
-
   def mcmc_step(params, data, key, width):
     """Performs a set of MCMC steps.
 
@@ -302,7 +364,8 @@ def make_mcmc_step(logabs_network,
           ndim=ndim,
           atoms=atoms,
           blocks=ntwist,
-          i=i)
+          i=i,
+          same_spin_exchange=same_spin_exchange)
 
     nsteps = steps * ntwist
     nspecies = len(nspins)

@@ -249,6 +249,9 @@ def default() -> ml_collections.ConfigDict:
           # Width of Gaussian used for random moves for RMW or step size for
           # HMC.
           'move_width': 0.02,
+          # If true, randomly permute particles within each spin species before
+          # applying the Gaussian MCMC proposal.
+          'same_spin_exchange': False,
           # Number of steps after which to update the adaptive MCMC step size
           'adapt_frequency': 100,
           'use_hmc': False,  # Use HMC (True) or Random Walk Metropolis (False)

@@ -765,6 +765,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       atoms=atoms_to_mcmc,
       sample_all= cfg.mcmc.sample_all,
       blocks=cfg.mcmc.blocks * num_states,
+      same_spin_exchange=cfg.mcmc.same_spin_exchange,
   )
   # Construct loss and optimizer
   laplacian_method = cfg.optim.get('laplacian', 'default')
