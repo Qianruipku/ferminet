@@ -265,6 +265,8 @@ def default() -> ml_collections.ConfigDict:
           'mix_width': 1.0,
           # Probability of taking a large jump in the mixture proposal.
           'mix_prob': 0.0,
+          # If true, randomly permute particles within each spin species before
+          'same_spin_exchange': False,
           'adapt_width': True,  # If true, adapt the MCMC step size to achieve target acceptance rate
           # Number of steps after which to update the adaptive MCMC step size
           'adapt_frequency': 100,

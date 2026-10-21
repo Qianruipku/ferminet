@@ -788,6 +788,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       mix_width=cfg.mcmc.mix_width,
       mix_prob=cfg.mcmc.mix_prob,
       enhance_alpha=cfg.mcmc.enhance.alpha,
+      same_spin_exchange=cfg.mcmc.same_spin_exchange,
   )
   # Construct loss and optimizer
   laplacian_method = cfg.optim.get('laplacian', 'default')
