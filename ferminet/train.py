@@ -47,7 +47,6 @@ import ferminet.pbc.envelopes as pbc_envelopes
 import ferminet.pbc.feature_layer as pbc_feature_layer
 from ferminet.observable.apmd import write_apmd_1d
 from ferminet.observable.mix_net import make_mix_batch_network_fn
-from ferminet.enhance_sample import make_enhance_sample_fn
 from ferminet.observable.densitymatrix import RadialTwoBodyDensity
 import jax
 from jax.experimental import multihost_utils
@@ -541,11 +540,8 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       logabs_network, in_axes=(None, 0, 0, 0, 0), out_axes=0
   )  # batched network
   sample_network = batch_network
-  inverse_enhance_sample = None
   if cfg.optim.optimizer == 'none' and (cfg.observables.ann_rate.calculate or cfg.observables.ann_rate.distribution):
     sample_network, contact_prob_fn, distribution_fn = make_mix_batch_network_fn(logabs_network, cfg)
-  elif cfg.optim.optimizer is not 'none' and cfg.mcmc.enhance.factor > 0.0:
-    sample_network, inverse_enhance_sample = make_enhance_sample_fn(logabs_network, lat, cfg)
 
   # Exclusively when computing the gradient wrt the energy for complex
   # wavefunctions, it is necessary to have log(psi) rather than log(|psi|).
@@ -621,8 +617,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
 
   # Set up logging and observables
   train_schema = ['step', 'energy', 'ewmean', 'ewvar', 'pmove']
-  if inverse_enhance_sample is not None:
-    train_schema += ['ebias']
 
   if cfg.system.states:
     energy_matrix_file = open(
@@ -787,7 +781,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       blocks=cfg.mcmc.blocks * num_states,
       mix_width=cfg.mcmc.mix_width,
       mix_prob=cfg.mcmc.mix_prob,
-      enhance_alpha=cfg.mcmc.enhance.alpha,
       same_spin_exchange=cfg.mcmc.same_spin_exchange,
   )
   # Construct loss and optimizer
@@ -887,7 +880,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         center_at_clipped_energy=cfg.optim.center_at_clip,
         complex_output=use_complex,
         max_vmap_batch_size=cfg.optim.get('max_vmap_batch_size', 0),
-        inverse_enhance_sample=inverse_enhance_sample,
     )
   elif cfg.optim.objective == 'wqmc':
     evaluate_loss = qmc_loss_functions.make_wqmc_loss(
@@ -1268,9 +1260,6 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
             'ewvar': np.asarray(weighted_stats.variance),
             'pmove': np.asarray(np.mean(pmove)),
         }
-        if aux_data.ebias is not None:
-          writer_kwargs['ebias'] = np.asarray(aux_data.ebias[0] / cfg.batch_size)
-
         for key in observable_data:
           obs_data = observable_data[key]
           if cfg.system.states:
