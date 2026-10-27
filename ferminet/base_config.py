@@ -58,6 +58,14 @@ def default() -> ml_collections.ConfigDict:
           # 'wqmc': minimise <H> by Wasserstein QMC
           # 'vmc_overlap': minimize \sum_i <H_i> + \lambda \sum_ij <psi_i psi_j>
           'objective': 'vmc',
+          # If set, minimize the expected squared local-energy difference
+          # from this target instead of the mean energy.
+          'target_e': None,
+          # Shape of the per-sample loss used with target_e, as a function of
+          # X = E_L - target_e: 'square' (X^2), 'abs' (|X|) or
+          # 'pseudo_huber' (sqrt(target_delta^2 + X^2) - target_delta).
+          'target_loss': 'square',
+          'target_delta': 1.0,
           'iterations': 1000000,  # number of iterations
           'optimizer': 'kfac',  # one of adam, kfac, lamb, muon, none
           'laplacian': 'default',  # of of default or folx (for forward lapl)

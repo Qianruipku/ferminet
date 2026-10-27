@@ -156,7 +156,10 @@ def make_loss(network: networks.LogFermiNetLike,
               clip_from_median: bool = True,
               center_at_clipped_energy: bool = True,
               complex_output: bool = False,
-              max_vmap_batch_size: int = 0) -> LossFn:
+              max_vmap_batch_size: int = 0,
+              target_e: float | None = None,
+              target_loss: str = 'square',
+              target_delta: float = 1.0) -> LossFn:
   """Creates the loss function, including custom gradients.
 
   Args:
@@ -178,12 +181,30 @@ def make_loss(network: networks.LogFermiNetLike,
     complex_output: If true, the local energies will be complex valued.
     max_vmap_batch_size: If 0, use standard vmap. If >0, use batched_vmap with
       the given batch size.
+    target_e: If set, minimize the expected value of rho(|E_L - target_e|)
+      instead of the mean energy, where rho is chosen by target_loss.
+    target_loss: Shape of rho when target_e is set. One of 'square' (X^2),
+      'abs' (|X|) or 'pseudo_huber' (sqrt(delta^2 + X^2) - delta).
+    target_delta: The delta of the 'pseudo_huber' loss. It is quadratic for
+      |X| << delta and linear for |X| >> delta.
 
   Returns:
     Callable with signature (params, data) and returns (loss, aux_data), where
-    loss is the mean energy, and aux_data is an AuxiliaryLossDataobject. The
-    loss is averaged over the batch and over all devices inside a pmap.
+    loss is the mean energy or, when target_e is set, the mean of
+    rho(|E_L - target_e|). The loss is averaged over the batch
+    and over all devices inside a pmap.
   """
+  if target_loss not in ('square', 'abs', 'pseudo_huber'):
+    raise ValueError(f'Unknown target_loss: {target_loss}')
+
+  def rho(r):
+    """Per-sample loss as a function of r = |E_L - target_e|."""
+    if target_loss == 'square':
+      return r**2
+    if target_loss == 'abs':
+      return r
+    return jnp.sqrt(target_delta**2 + r**2) - target_delta
+
   vmap = jax.vmap if max_vmap_batch_size == 0 else functools.partial(
       folx.batched_vmap, max_batch_size=max_vmap_batch_size)
   batch_local_energy = vmap(
@@ -215,19 +236,23 @@ def make_loss(network: networks.LogFermiNetLike,
       data: Batched MCMC configurations to pass to the local energy function.
 
     Returns:
-      (loss, aux_data), where loss is the mean energy, and aux_data is an
-      AuxiliaryLossData object containing the variance of the energy and the
-      local energy per MCMC configuration. The loss and variance are averaged
-      over the batch and over all devices inside a pmap.
+      (loss, aux_data), where loss is the mean energy or the mean
+      rho(|local_energy - target_e|), and aux_data contains the mean
+      energy, its variance, and the local energy per MCMC configuration.
     """
     
     keys = jax.random.split(key, num=data.positions.shape[0])
     e_l, e_l_mat = batch_local_energy(params, keys, data)
-    loss = constants.pmean(jnp.mean(e_l))
-    loss_diff = e_l - loss
+    mean_energy = constants.pmean(jnp.mean(e_l))
+    loss_diff = e_l - mean_energy
     variance = constants.pmean(jnp.mean(loss_diff * jnp.conj(loss_diff)))
+    if target_e is None:
+      loss = mean_energy
+    else:
+      residual = e_l - target_e
+      loss = constants.pmean(jnp.mean(rho(jnp.abs(residual))))
     return loss, AuxiliaryLossData(
-        energy=loss,
+        energy=mean_energy,
         variance=variance.real,
         local_energy=e_l,
         clipped_energy=e_l,
@@ -240,43 +265,46 @@ def make_loss(network: networks.LogFermiNetLike,
     params, key, data = primals
     loss, aux_data = total_energy(params, key, data)
 
-    if clip_local_energy > 0.0:
-      clipped_center, diff = clip_local_values(
-          aux_data.local_energy,
-          loss,
-          clip_local_energy,
-          clip_from_median,
-          center_at_clipped_energy,
-          complex_output)
+    if target_e is not None:
+      keys = jax.random.split(key, num=data.positions.shape[0])
 
-    if clip_local_energy <= 0.0:
-      diff = aux_data.local_energy - loss
-    # Due to the simultaneous requirements of KFAC (calling convention must be
-    # (params, rng, data)) and Laplacian calculation (only want to take
-    # Laplacian wrt electron positions) we need to change up the calling
-    # convention between total_energy and batch_network
-    data = primals[2]
-    data_tangents = tangents[2]
-    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges)
-    tangents = (
-        tangents[0],
-        data_tangents.positions,
-        data_tangents.spins,
-        data_tangents.atoms,
-        data_tangents.charges,
-    )
-    psi_primal, psi_tangent = jax.jvp(batch_network, primals, tangents)
-    if complex_output:
-      clipped_el = diff + aux_data.clipped_energy
-      term1 = (jnp.dot(clipped_el, jnp.conjugate(psi_tangent)) +
-               jnp.dot(jnp.conjugate(clipped_el), psi_tangent))
-      term2 = jnp.sum(aux_data.clipped_energy*psi_tangent.real)
-      kfac_jax.register_normal_predictive_distribution(
-          psi_primal.real[:, None])
-      primals_out = loss.real, aux_data
-      device_batch_size = jnp.shape(aux_data.local_energy)[0]
-      tangents_out = ((term1 - 2*term2).real / device_batch_size, aux_data)
+      def batch_target_loss(params_):
+        local_energy = batch_local_energy(params_, keys, data)[0]
+        psi = batch_network(
+            params_, data.positions, data.spins, data.atoms, data.charges)
+        return rho(jnp.abs(local_energy - target_e)), psi
+
+      (sample_loss, psi_primal), (loss_tangent, psi_tangent) = jax.jvp(
+          batch_target_loss, (params,), (tangents[0],))
+      diff = sample_loss - constants.pmean(jnp.mean(sample_loss))
+      tangent_local_loss = loss_tangent + 2.0 * psi_tangent * diff
+      tangent_loss = constants.pmean(jnp.mean(tangent_local_loss))
+      kfac_jax.register_normal_predictive_distribution(psi_primal[:, None])
+      primals_out = loss, aux_data
+      tangents_out = (tangent_loss, aux_data)
     else:
+      if clip_local_energy > 0.0:
+        clipped_center, diff = clip_local_values(
+            aux_data.local_energy,
+            aux_data.energy,
+            clip_local_energy,
+            clip_from_median,
+            center_at_clipped_energy)
+        aux_data.clipped_energy = clipped_center + diff
+      else:
+        diff = aux_data.local_energy - aux_data.energy
+      data_tangents = tangents[2]
+      jvp_primals = (
+          params, data.positions, data.spins, data.atoms, data.charges)
+      jvp_tangents = (
+          tangents[0],
+          data_tangents.positions,
+          data_tangents.spins,
+          data_tangents.atoms,
+          data_tangents.charges,
+      )
+      psi_primal, psi_tangent = jax.jvp(
+          batch_network, jvp_primals, jvp_tangents)
       kfac_jax.register_normal_predictive_distribution(psi_primal[:, None])
       primals_out = loss, aux_data
       device_batch_size = jnp.shape(aux_data.local_energy)[0]

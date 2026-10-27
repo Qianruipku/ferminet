@@ -616,7 +616,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     params = params_from_ckpt
 
   # Set up logging and observables
-  train_schema = ['step', 'energy', 'ewmean', 'ewvar', 'pmove']
+  train_schema = ['step', 'energy', 'ewmean', 'ewvar', 'pmove', 'loss']
 
   if cfg.system.states:
     energy_matrix_file = open(
@@ -880,6 +880,9 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         center_at_clipped_energy=cfg.optim.center_at_clip,
         complex_output=use_complex,
         max_vmap_batch_size=cfg.optim.get('max_vmap_batch_size', 0),
+        target_e=cfg.optim.get('target_e'),
+        target_loss=cfg.optim.get('target_loss', 'square'),
+        target_delta=cfg.optim.get('target_delta', 1.0),
     )
   elif cfg.optim.objective == 'wqmc':
     evaluate_loss = qmc_loss_functions.make_wqmc_loss(
@@ -1115,11 +1118,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       # due to pmean, loss, and pmove should be the same across
       # devices.
       loss = jnp.real(loss[0])
+      energy = jnp.real(aux_data.energy[0])
       # per batch variance isn't informative. Use weighted mean and variance
       # instead.
       if not jnp.isnan(loss) and not jnp.isinf(loss):
         weighted_stats = statistics.exponentialy_weighted_stats(
-          alpha=0.1, observation=loss, previous_stats=weighted_stats)
+          alpha=0.1, observation=energy, previous_stats=weighted_stats)
       pmove = pmove[0]
 
       # Update observables
@@ -1249,13 +1253,16 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         remaining_time = avg_time * (cfg.optim.iterations - t - 1)
         
         logging_str = ('Step %05d: '
-                       '%03.4f E_h, exp. variance=%03.4f E_h^2, pmove=%0.2f, '
+                       'loss=%03.4f, %03.4f E_h, exp. variance=%03.4f E_h^2, '
+                       'pmove=%0.2f, '
                        'step time: %0.2fs, total: %0.1fmin, eta: %0.1fmin')
-        logging_args = (t, loss, weighted_stats.variance, np.mean(pmove),
-                       step_time, total_time/60, remaining_time/60)
+        logging_args = (t, loss, energy, weighted_stats.variance,
+                        np.mean(pmove),
+                        step_time, total_time/60, remaining_time/60)
         writer_kwargs = {
             'step': t,
-            'energy': np.asarray(loss),
+            'loss': np.asarray(loss),
+            'energy': np.asarray(energy),
             'ewmean': np.asarray(weighted_stats.mean),
             'ewvar': np.asarray(weighted_stats.variance),
             'pmove': np.asarray(np.mean(pmove)),
