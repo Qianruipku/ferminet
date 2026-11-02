@@ -121,6 +121,19 @@ def default() -> ml_collections.ConfigDict:
               'eps': 1.0e-8,
               'eps_root': 0.0,
           },
+          # Muon hyperparameters. See optax.contrib.muon for details.
+          'muon': {
+              # Newton-Schulz polynomial coefficients preset.
+              'ns_coeffs': (3.4445, -4.775, 2.0315),
+              'ns_steps': 5,
+              'beta': 0.95,
+              'eps': 1.0e-8,
+              'weight_decay': 0.0,
+              # Use Nesterov momentum.
+              'nesterov': True,
+              # Adaptive dual-norm scaling.
+              'adaptive': False,
+          },
       },
       'log': {
           'stats_frequency': 1,  # iterations between logging of stats
