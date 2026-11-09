@@ -702,11 +702,12 @@ def cal_apmd(
 
 
 def cal_ann_rate(
-    signed_network: networks.FermiNetLike,
+    contact_prob_fn: Callable,
     nspins: Tuple[int, ...],
     apply_pbc: bool,
     lattice_vectors: jnp.ndarray,
     ntwist: int = 1,
+    sample_type: str = 'none',
 ) -> Tuple[jnp.ndarray, Observable]:
   """Evaluates the annihilation rate observable.
 
@@ -715,11 +716,13 @@ def cal_ann_rate(
   averaged over walkers and electrons.
 
   Args:
-    signed_network: Network callable returning phase/sign and log-magnitude.
     nspins: Tuple containing the number of particles of each species.
+    contact_prob_fn: Mixed-network estimator of contact and target
+      probabilities, with one result per twist.
+    sample_type: MCMC sampling mode used to determine ratio normalization.
     apply_pbc: Whether or not we are on periodic boundary conditions.
-    complex_output: Whether the network output is complex-valued. The
-      estimator uses only |psi|^2 and is therefore independent of phase/sign.
+    lattice_vectors: Periodic cell lattice vectors.
+    ntwist: Number of twist vectors.
 
   Returns:
     Initial state and a callable with same arguments as the network which
@@ -730,13 +733,15 @@ def cal_ann_rate(
     raise NotImplementedError(
         'Annihilation rate is only implemented for periodic boundary '
         'conditions.')
+  if contact_prob_fn is None:
+    raise ValueError(
+        'Annihilation rate estimation requires a contact probability '
+        'function.')
 
   init_state = jnp.zeros((jax.local_device_count(), ntwist))
   prefactor = 50.48473
   Volume = jnp.linalg.det(lattice_vectors)
-  n_particles = sum(nspins)
-  n_electrons = n_particles - 1  # exclude the positron
-
+  n_electrons = sum(nspins) - 1  # exclude the positron
 
   @functools.partial(constants.pmap)
   def ann_rate_estimator(
@@ -746,34 +751,14 @@ def cal_ann_rate(
   ) -> jnp.ndarray:
     """Returns the annihilation rate contribution from configurations x."""
 
-    pos = data.positions.reshape(-1, n_particles, 3)
-    nwalker_per_device = pos.shape[0]
-
-    batch_network = jax.vmap(
-        signed_network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=(0, 0))
-    _, log_psi = batch_network(
-        params, data.positions, data.spins, data.atoms, data.charges, data.twist)
-
-    def loop_electron(j, val):
-      pos_modified_j = pos.copy()
-      electron_j_coords = pos[:, j, :]
-      pos_modified_j = pos_modified_j.at[:, -1, :].set(electron_j_coords)
-
-      pos_modified_flat = jnp.reshape(
-        pos_modified_j, (nwalker_per_device, n_particles * 3))
-      _, log_psi_modified_j = batch_network(
-        params, pos_modified_flat, data.spins, data.atoms, data.charges, data.twist)
-
-      # |psi_modified|^2 / |psi|^2 = exp(2 * (log|psi_modified| - log|psi|)).
-      ratio = jnp.exp(2.0 * (log_psi_modified_j - log_psi))
-      ratio_per_twist = jnp.reshape(ratio, (ntwist, -1))  # [ntwist, walkers_per_twist]
-      return val + jnp.sum(ratio_per_twist, axis=1)  # [ntwist]
-
-    contribution = jax.lax.fori_loop(
-      0, n_electrons, loop_electron, jnp.zeros((ntwist,), dtype=log_psi.dtype))
-
-    state = constants.pmean(contribution) / (n_electrons * nwalker_per_device)
-    
-    return state * prefactor * n_electrons / Volume
+    del state
+    probability_ratios = constants.pmean(contact_prob_fn(
+        params, data.positions, data.spins, data.atoms, data.charges,
+        data.twist))
+    if sample_type == 'none':
+      contact_ratio = probability_ratios[0]
+    else:
+      contact_ratio = probability_ratios[0] / probability_ratios[1]
+    return contact_ratio * prefactor * n_electrons / Volume
 
   return init_state, ann_rate_estimator

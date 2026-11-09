@@ -32,6 +32,7 @@ from ferminet import fake_hamiltonian
 from ferminet import init
 from ferminet import loss as qmc_loss_functions
 from ferminet import mcmc
+from ferminet import mix_net
 from ferminet import networks
 from ferminet import observables
 from ferminet import pretrain
@@ -556,6 +557,18 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
       phase, mag = signed_network(*args, **kwargs)
       return mag + 1.j * phase
 
+  sample_network = logabs_network
+  contact_prob_fn = None
+  if (cfg.optim.optimizer == 'none' and
+      cfg.observables.ann_rate.calculate):
+    sample_batch_network, contact_prob_fn, _ = (
+        mix_net.make_mix_batch_network_fn(logabs_network, cfg))
+
+    def sample_network(params, positions, spins, atoms, charges, twist):
+      return sample_batch_network(
+          params, positions[None, :], spins[None, :], atoms[None, ...],
+          charges[None, ...], twist[None, :])[0]
+
   # Set up checkpointing and restore params/data if necessary
   # Mirror behaviour of checkpoints in TF FermiNet.
   # Checkpoints are saved to save_path.
@@ -690,11 +703,12 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   if cfg.observables.ann_rate.calculate:
     (observable_states['ann_rate'],
      observable_fns['ann_rate']) = observables.cal_ann_rate(
-         signed_network,
+         contact_prob_fn,
          cfg.system.particles,
          cfg.system.pbc.apply_pbc,
          cfg.system.pbc.lattice_vectors,
          ntwist=ntwist,
+         sample_type=cfg.mcmc.mix_sample.type,
      )
     ann_rate_path = os.path.join(ckpt_save_path, 'ann_rate.txt')
     ann_rate_file = open(ann_rate_path, 'a')
@@ -742,7 +756,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
   # Construct MCMC step
   atoms_to_mcmc = atoms if cfg.mcmc.scale_by_nuclear_distance else None
   mcmc_step = mcmc.make_mcmc_step(
-      logabs_network,
+      sample_network,
       device_batch_size,
       nspins=cfg.system.particles,
       ndim=cfg.system.ndim,
