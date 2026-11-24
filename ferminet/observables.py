@@ -755,10 +755,9 @@ def cal_ann_rate(
     probability_ratios = constants.pmean(contact_prob_fn(
         params, data.positions, data.spins, data.atoms, data.charges,
         data.twist))
+    contact_rate = probability_ratios[0] * prefactor * n_electrons / Volume
     if sample_type == 'none':
-      contact_ratio = probability_ratios[0]
-    else:
-      contact_ratio = probability_ratios[0] / probability_ratios[1]
-    return contact_ratio * prefactor * n_electrons / Volume
+      return contact_rate
+    return jnp.stack((contact_rate, probability_ratios[1]))
 
   return init_state, ann_rate_estimator

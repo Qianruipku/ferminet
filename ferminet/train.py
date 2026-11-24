@@ -700,6 +700,7 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
         use_complex
       )
 
+  ann_rate_files = []
   if cfg.observables.ann_rate.calculate:
     (observable_states['ann_rate'],
      observable_fns['ann_rate']) = observables.cal_ann_rate(
@@ -710,12 +711,19 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
          ntwist=ntwist,
          sample_type=cfg.mcmc.mix_sample.type,
      )
-    ann_rate_path = os.path.join(ckpt_save_path, 'ann_rate.txt')
-    ann_rate_file = open(ann_rate_path, 'a')
-    if os.path.getsize(ann_rate_path) == 0:
-      twist_header = '  '.join([f'Gamma_twist{i}(ns^-1)' for i in range(ntwist)])
-      ann_rate_file.write(f'#step  {twist_header}\n')
-      ann_rate_file.flush()
+    for twist_index in range(ntwist):
+      ann_rate_path = os.path.join(
+          ckpt_save_path, f'ann_rate_twist_{twist_index}.txt')
+      ann_rate_file = open(ann_rate_path, 'a')
+      if os.path.getsize(ann_rate_path) == 0:
+        twist_weight = float(cfg.system.pbc.twist_weights[twist_index])
+        header = (f'# twist_weight: {twist_weight:.10e}\n'
+                  '#step  annihilation_rate(ns^-1)')
+        if cfg.mcmc.mix_sample.type != 'none':
+          header += '  target_probability_ratio'
+        ann_rate_file.write(f'{header}\n')
+        ann_rate_file.flush()
+      ann_rate_files.append(ann_rate_file)
   
   # Initialisation done. We now want to have different PRNG streams on each
   # device. Shard the key over devices
@@ -1157,10 +1165,15 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
                           ckpt_save_path=ckpt_save_path)
 
       if cfg.observables.ann_rate.calculate and jax.process_index() == 0:
-        ann_rate_values = np.asarray(observable_data['ann_rate'][0])  # shape (ntwist,)
-        values_str = '  '.join([f'{v:.10e}' for v in ann_rate_values])
-        ann_rate_file.write(f'{t:05d}  {values_str}\n')
-        ann_rate_file.flush()
+        ann_rate_values = np.asarray(observable_data['ann_rate'][0])
+        for twist_index, ann_rate_file in enumerate(ann_rate_files):
+          if cfg.mcmc.mix_sample.type == 'none':
+            values = (ann_rate_values[twist_index],)
+          else:
+            values = ann_rate_values[:, twist_index]
+          values_str = '  '.join([f'{value:.10e}' for value in values])
+          ann_rate_file.write(f'{t:05d}  {values_str}\n')
+          ann_rate_file.flush()
 
       # Update MCMC move width
       mcmc_width, pmoves = mcmc.update_mcmc_width(
@@ -1281,4 +1294,5 @@ def train(cfg: ml_collections.ConfigDict, writer_manager=None):
     if cfg.observables.rho_r.calculate:
       rho_r_file.close()
     if cfg.observables.ann_rate.calculate:
-      ann_rate_file.close() 
+      for ann_rate_file in ann_rate_files:
+        ann_rate_file.close()
