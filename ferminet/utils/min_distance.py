@@ -30,7 +30,7 @@ def min_image_distance_cubic(r_ij : jnp.ndarray,
     
     Args:
         r_ij: (N, 3) array of relative position vectors
-        lattice_vector: (3, 3) lattice vector matrix, each row is a lattice vector
+        lattice_vector: (3, 3) lattice vector matrix, each column is a lattice vector
     
     Returns:
         dr_min: (N, 3) minimum image displacement vectors
@@ -57,7 +57,7 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
     
     Args:
         r_ij: (N, 3) array of relative position vectors
-        lattice_vector: (3, 3) lattice vector matrix, each row is a lattice vector
+        lattice_vector: (3, 3) lattice vector matrix, each column is a lattice vector
         radius: search radius, enumerate integer offsets in [-radius, radius]^3 
                 around the component-wise rounded solution
     
@@ -105,7 +105,7 @@ def find_neighbors_within_cutoff(r_ij : jnp.ndarray,
     
     Args:
         r_ij: (N, 3) array of relative position vectors
-        lattice_vector: (3, 3) lattice vector matrix, each row is a lattice vector
+        lattice_vector: (3, 3) lattice vector matrix, each column is a lattice vector
         rcut: cutoff distance
         radius: search radius, enumerate integer offsets in [-radius, radius]^3 
                 in fractional coordinates
