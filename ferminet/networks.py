@@ -997,7 +997,7 @@ def make_fermi_net_layers(
     # two-electron stream, per pair of electrons:
     #  - two-electron features per electron pair (default: electron-electron
     #    vector (dim) and distance (1))
-    dims_one_in = num_one_features
+    dims_one_in = num_one_features + options.ndim
     dims_two_in = num_two_features
     # Note SchNet-style convolution with a electron-nuclear stream assumes
     # FermiNet features currently.

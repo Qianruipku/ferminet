@@ -9,14 +9,15 @@ def initgrids(
     """Initialize the grid for plane wave calculations.
 
     Args:
-        lattice_vectors: Array of lattice vectors. Shape: (3, 3)
+        lattice_vectors: Matrix with lattice vectors as columns. Shape: (3, 3)
         ecut: Energy cutoff for the plane wave basis set in Hartree (Ha).
 
     Returns:
         A tuple containing:
         - grid_points: Array of G vectors in reciprocal space. dims: (n_points, 3)
-        - g_magnitudes: Array of |G| magnitudes for each G vector. dims: (n_points,)
+        - g_square: Array of |G| squared for each G vector. dims: (n_points,)
     """
+    lattice_vectors = lattice_vectors.T # Change column primitive vectors to row primitive vectors
     # Initialize lattice parameters
     tpiba = 2.0 * jnp.pi
     tpiba2 = tpiba * tpiba
@@ -66,7 +67,7 @@ def initgrids(
     
     # Convert to Cartesian coordinates for all valid points at once
     if valid_indices.shape[0] > 0:
-        grid_points = (valid_indices @ GT) * tpiba
+        grid_points = (valid_indices @ G) * tpiba
         # Calculate |G| magnitudes for each G vector
         g_square = jnp.sum(grid_points**2, axis=1)
         

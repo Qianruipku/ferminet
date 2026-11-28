@@ -197,7 +197,8 @@ def default() -> ml_collections.ConfigDict:
             # Search radius for nearest neighbors
             'r_search': 0,
             'put_in_box': False,
-            'twist_vectors': jnp.array([[0.0, 0.0, 0.0]]),  # (ntwist, ndim) array of twist vectors
+            # Cartesian wavevectors (ntwist, ndim), in inverse bohr.
+            'twist_vectors': jnp.array([[0.0, 0.0, 0.0]]),
             'twist_weights': jnp.array([1.0]),  # (ntwist) array of twist weights
             # whether to use separate twist vectors for different spin channels. [1, 1, ...] with length equal to number of spin channels means to use twist vectors for all channels, while [0, 1, ...] means to use twist vectors for only the second channel and not the first.
             'use_twist_per_channel': None,

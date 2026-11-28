@@ -93,9 +93,9 @@ def make_pbc_feature_layer(
     ae_feat_dim = feature_order1 * 2 * ndim
     ee_feat_dim = feature_order2 * 2 * ndim
     if include_r_ae:
-      return (natoms * (ae_feat_dim + 1) + 3, ee_feat_dim + 1), {}
+      return (natoms * (ae_feat_dim + 1), ee_feat_dim + 1), {}
     else:
-      return (natoms * (ae_feat_dim) + 3, ee_feat_dim + 1), {}
+      return (natoms * ae_feat_dim, ee_feat_dim + 1), {}
 
   def apply(ae, r_ae, ee, r_ee) -> Tuple[jnp.ndarray, jnp.ndarray]:
     # One e features in phase coordinates, (s_ae)_i = k_i . ae

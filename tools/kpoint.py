@@ -2,6 +2,8 @@ import numpy as np
 import spglib
 
 a = 5.43
+# spglib uses lattice vectors as rows; transpose this matrix when passing it
+# to FermiNet's column-oriented lattice_vectors configuration.
 lattice = np.array([
     [0.0, 0.5*a, 0.5*a],
     [0.5*a, 0.0, 0.5*a],

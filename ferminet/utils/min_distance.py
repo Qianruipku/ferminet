@@ -6,7 +6,7 @@ class Lattice:
         Initialize the Lattice with given lattice vectors.
         
         Args:
-            lattice_vector: (3, 3) array where each row is a lattice vector
+            lattice_vector: (3, 3) array where each column is a lattice vector
         """
         if lattice_vector is not None:
             self.lattice_vector = jnp.array(lattice_vector)
@@ -52,14 +52,15 @@ def min_image_distance_triclinic(r_ij : jnp.ndarray,
                                  lat : Lattice, 
                                  radius : int = 1) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Returns the minimum image displacement vectors for batch relative position vectors
-    using triclinic lattice minimum image convention.
+    Returns the shortest displacement vectors within a finite image search.
     
     Args:
         r_ij: (N, 3) array of relative position vectors
         lattice_vector: (3, 3) lattice vector matrix, each column is a lattice vector
-        radius: search radius, enumerate integer offsets in [-radius, radius]^3 
-                around the component-wise rounded solution
+        radius: search radius, enumerate integer offsets in [-radius, radius]^3
+                around the component-wise rounded solution. Radius 0 is exact
+                for orthogonal cells but not generally for skew cells; finite
+                radii do not guarantee the global minimum for arbitrary cells.
     
     Returns:
         dr_min: (N, 3) minimum image displacement vectors
