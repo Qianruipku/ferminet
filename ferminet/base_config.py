@@ -175,7 +175,7 @@ def default() -> ml_collections.ConfigDict:
           'pbc': {
             # If True, apply periodic boundary conditions
             'apply_pbc': False,
-            # Array of shape (ndim, ndim) with the lattice vectors of the simulation cell
+            # Array of shape (ndim, ndim) with lattice vectors as columns
             'lattice_vectors': None,
             # Number cells to use in the Ewald summation on each direction
             'convergence_radius': 5,
